@@ -187,7 +187,6 @@ func (a *Agent) Register(serviceIP string, servicePort uint16,
 
 func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
 	serviceData uint32, len uint8, serviceName string, automatic bool) {
-
 	var sip uint32
 	binary.Read(bytes.NewBuffer(net.ParseIP(serviceIP).To4()), binary.BigEndian, &sip)
 	addr := net.UDPAddr{

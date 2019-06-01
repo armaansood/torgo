@@ -7,8 +7,10 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 	r "torgo/regagent"
 )
@@ -71,6 +73,10 @@ var initiatedConnection = make(map[uint32]bool)
 
 var firstHopCircuit circuit
 
+var agent *r.Agent
+
+var port uint16
+
 // Bijective mapping from (circuitID, agentID) to (circuitID, agentID).
 // Mapping from (circuitID, agentID) to (0, 0) means it is the
 var routingTableForward = make(map[circuit]circuit)
@@ -79,11 +85,22 @@ var routerID uint32
 
 var wg sync.WaitGroup
 
-func StartRouter(routerName string, agentID uint32, port uint16) {
-	routerID = agentID
-	agent := new(r.Agent)
-	agent.StartAgent(regServerIP, regServerPort, false)
-	agent.Register("127.0.0.1", port, agentID, uint8(len(routerName)), routerName)
+func cleanup() {
+	fmt.Println("Cleaning up...")
+	agent.Unregister("127.0.0.1", port)
+}
+
+func StartRouter(routerName string) {
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		cleanup()
+		os.Exit(1)
+	}()
+	agent = new(r.Agent)
+	agent.StartAgent(regServerIP, regServerPort, true)
+	agent.Register("127.0.0.1", port, routerID, uint8(len(routerName)), routerName)
 	go localServer(port)
 	rand.Seed(time.Now().Unix())
 	responses := agent.Fetch("Tor61Router-4215")
@@ -195,9 +212,22 @@ func openConnectionIfNotExists(address string, theirAgentID uint32) bool {
 }
 
 func openConnection(address string, theirAgentID uint32) bool {
-	conn, err := net.Dial("tcp", address)
+	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		fmt.Println(address)
+		fmt.Println(address == "127.0.0.1:1238")
+		fmt.Println([]byte(address))
+		fmt.Println([]byte("127.0.0.1:1238"))
+		fmt.Println(err)
+		os.Exit(2)
+	}
+	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		fmt.Println(err)
+		fmt.Println(address)
+		fmt.Println(currentConnections)
+		fmt.Println(theirAgentID)
+		fmt.Println("Error")
 		return false
 	}
 	openCell := createOpenCell(createCell(0, open), routerID, theirAgentID)
@@ -253,10 +283,13 @@ func openConnection(address string, theirAgentID uint32) bool {
 func acceptConnection(c net.Conn) {
 	// New connection. First, wait for an "open".
 	cell := make([]byte, 512)
+	fmt.Println("Waiting on data")
 	_, err := c.Read(cell)
 	if err != nil {
+		fmt.Println(err)
 		return
 	}
+	fmt.Println("Received some data!")
 	otherAgentID := uint32(0)
 	// Maps from circuit ID to a message type.
 	// For example, if we just sent a create message on
@@ -271,6 +304,8 @@ func acceptConnection(c net.Conn) {
 			// Open cell sent with wrong router ID.
 			cell[2] = openFailed
 			c.Write(cell)
+			fmt.Println("Open failed")
+			c.Close()
 			return
 		} else {
 			// Opened connection.
@@ -279,6 +314,8 @@ func acceptConnection(c net.Conn) {
 			c.Write(cell)
 		}
 	} else {
+		fmt.Println("Bad message")
+		c.Close()
 		// Connection initiated but they did not send an open cell.
 		return
 	}
@@ -297,7 +334,12 @@ func handleConnection(c net.Conn, otherAgentID uint32) {
 	go func() {
 		for {
 			cell := <-toSend
-			fmt.Printf("%d: Sending message to %d %+v\n", routerID, otherAgentID, c)
+			circID, mType := cellCIDAndType(cell)
+			fmt.Printf("%d: Sending message to %d of type %d on circuit %d\n", routerID, otherAgentID, mType, circID)
+			fmt.Println(routingTableForward)
+			fmt.Println(routingTableBackward)
+			fmt.Println(circuitToStream)
+			fmt.Println(firstHopCircuit)
 			c.Write(cell)
 		}
 	}()
@@ -306,7 +348,9 @@ func handleConnection(c net.Conn, otherAgentID uint32) {
 		cell := make([]byte, 512)
 		_, err := c.Read(cell)
 		if err != nil {
-			continue
+			fmt.Println(err)
+			fmt.Printf("Error on connection from %d\n", otherAgentID)
+			return
 		}
 		circuitID, cellType := cellCIDAndType(cell)
 		fmt.Printf("%d: Received message from %d on circuit %d of type %d\n", routerID, otherAgentID, circuitID, cellType)
@@ -359,10 +403,11 @@ func extendRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 	if endOfRelay {
 		fmt.Println("extending now")
 		fmt.Println(r.body)
-		address := string(r.body[:clen(r.body)+1])
+		address := string(r.body[:clen(r.body)])
 		fmt.Println(r.body)
 		fmt.Println(r.body[:clen(r.body)+1])
 		fmt.Println(address)
+		fmt.Println("HERE")
 		extendAgent := binary.BigEndian.Uint32(r.body[(clen(r.body))+1:])
 		fmt.Println(extendAgent)
 		agentConnection, ok := currentConnections[extendAgent]
@@ -415,6 +460,7 @@ func extendRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 	} else {
 		// If we're not the end of the relay, just foward the message.
 		endPoint := routingTableForward[c]
+		fmt.Println(routingTableForward)
 		fmt.Printf("Forwarding message to %+v\n", endPoint)
 		binary.BigEndian.PutUint16(cell[:2], endPoint.circuitID)
 		currentConnections[endPoint.agentID] <- cell
@@ -468,16 +514,21 @@ func createRelay(circuitID uint16, streamID uint16, digest uint32,
 }
 
 func localServer(port uint16) {
-	l, err := net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(int(port)))
+	l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(int(port)))
 	if err != nil {
 		os.Exit(2)
 	}
 	defer l.Close()
 
 	for {
+		fmt.Printf("Listening on port %d\n", port)
 		c, err := l.Accept()
 		if err != nil {
+			fmt.Println(err)
+			fmt.Println("SERVER ERROR")
 			continue
+		} else {
+			fmt.Println("Connection accepted")
 		}
 		go acceptConnection(c)
 	}
@@ -534,10 +585,12 @@ func main() {
 		usage()
 	}
 	routerName := "Tor61Router-" + fmt.Sprintf("%04d", group) + "-" + fmt.Sprintf("%04d", instance)
-	routerID := (group << 16) | (instance)
+	routerNum := (group << 16) | (instance)
 	fmt.Println(routerName)
 	fmt.Println(routerID)
-	StartRouter(routerName, uint32(routerID), uint16(proxyPort))
+	port = uint16(proxyPort)
+	routerID = uint32(routerNum)
+	StartRouter(routerName)
 }
 
 func usage() {
