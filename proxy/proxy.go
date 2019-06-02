@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"bufio"
@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 )
+
+type HTTPRequest struct {
+	IP   string
+	Port string
+	Data []byte
+}
 
 func handleTunnel(client net.Conn, ip string, port string) {
 	server, err := net.Dial("tcp", ip+":"+port)
@@ -44,12 +49,12 @@ func handleTunnel(client net.Conn, ip string, port string) {
 	}()
 }
 
-func handleConnection(c net.Conn) {
+func ParseHTTPRequest(c net.Conn) HTTPRequest {
 	reader := bufio.NewReader(c)
 	var buffer bytes.Buffer
 	port := ""
 	ip := ""
-	tunnel := false
+	//	tunnel := false
 	for {
 		data, err := reader.ReadString('\n')
 		if err != nil {
@@ -75,7 +80,7 @@ func handleConnection(c net.Conn) {
 				fmt.Print(">>> " + data)
 			}
 			if strings.ToLower(strings.TrimSpace(firstLine[0])) == "connect" {
-				tunnel = true
+				//	tunnel = true
 			}
 		} else {
 			colonIndex := strings.IndexByte(data, ':')
@@ -103,13 +108,7 @@ func handleConnection(c net.Conn) {
 		}
 		buffer.WriteString(data)
 	}
-	if tunnel {
-		handleTunnel(c, ip, port)
-	} else {
-		result := sendRequest(buffer.Bytes(), ip, port)
-		c.Write(result)
-		c.Close()
-	}
+	return HTTPRequest{ip, port, buffer.Bytes()}
 }
 
 func sendRequest(data []byte, ip string, port string) []byte {
@@ -122,35 +121,4 @@ func sendRequest(data []byte, ip string, port string) []byte {
 	var buffer bytes.Buffer
 	io.Copy(&buffer, conn)
 	return buffer.Bytes()
-}
-
-func main() {
-	arguments := os.Args
-	if len(arguments) != 2 {
-		fmt.Println("Usage: ./run [port number]")
-		return
-	}
-
-	port := arguments[1]
-	l, err := net.Listen("tcp", "0.0.0.0:"+port)
-	if err != nil {
-		return
-	}
-	defer l.Close()
-
-	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-
-		}
-		os.Exit(1)
-	}()
-
-	for {
-		c, err := l.Accept()
-		if err != nil {
-			return
-		}
-		go handleConnection(c)
-	}
 }
