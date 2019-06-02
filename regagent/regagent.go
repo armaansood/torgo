@@ -171,7 +171,7 @@ func (a *Agent) Unregister(serviceIP string, servicePort uint16) {
 
 // Register a given service IP, port, data, and name.
 func (a *Agent) Register(serviceIP string, servicePort uint16,
-	serviceData uint32, len uint8, serviceName string) {
+	serviceData uint32, len uint8, serviceName string) bool {
 	addr := net.UDPAddr{
 		Port: int(servicePort),
 		IP:   net.ParseIP(serviceIP),
@@ -179,14 +179,14 @@ func (a *Agent) Register(serviceIP string, servicePort uint16,
 	_, ok := a.registeredAddresses[addr.String()]
 	if ok {
 		fmt.Println("Registration failed: must unregister data under same address.")
-		return
+		return false
 	}
 	a.registeredAddresses[addr.String()] = true
-	a.performRegistration(serviceIP, servicePort, serviceData, len, serviceName, false)
+	return a.performRegistration(serviceIP, servicePort, serviceData, len, serviceName, false)
 }
 
 func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
-	serviceData uint32, len uint8, serviceName string, automatic bool) {
+	serviceData uint32, len uint8, serviceName string, automatic bool) bool {
 	var sip uint32
 	binary.Read(bytes.NewBuffer(net.ParseIP(serviceIP).To4()), binary.BigEndian, &sip)
 	addr := net.UDPAddr{
@@ -195,7 +195,7 @@ func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
 	}
 	_, ok := a.registeredAddresses[addr.String()]
 	if !ok {
-		return
+		return false
 	}
 	header := createHeader(a.sequenceNumber, register)
 	data := make([]byte, 15)
@@ -215,9 +215,11 @@ func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
 			a.performRegistration(serviceIP, servicePort, serviceData, len, serviceName, true)
 		}
 		_ = time.AfterFunc(time.Duration(ttl/2)*time.Second, f)
+		return true
 	} else if a.debug {
 		fmt.Println("Sent 3 REGISTER messages but got no reply.")
 	}
+	return false
 }
 
 func (a *Agent) regServerListener(port int, ip string) {
