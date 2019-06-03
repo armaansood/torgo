@@ -11,9 +11,10 @@ import (
 )
 
 type HTTPRequest struct {
-	IP   string
-	Port string
-	Data []byte
+	IP    string
+	Port  string
+	Data  []byte
+	HTTPS bool
 }
 
 func handleTunnel(client net.Conn, ip string, port string) {
@@ -54,7 +55,7 @@ func ParseHTTPRequest(c net.Conn) HTTPRequest {
 	var buffer bytes.Buffer
 	port := ""
 	ip := ""
-	//	tunnel := false
+	tunnel := false
 	for {
 		data, err := reader.ReadString('\n')
 		if err != nil {
@@ -80,7 +81,7 @@ func ParseHTTPRequest(c net.Conn) HTTPRequest {
 				fmt.Print(">>> " + data)
 			}
 			if strings.ToLower(strings.TrimSpace(firstLine[0])) == "connect" {
-				//	tunnel = true
+				tunnel = true
 			}
 		} else {
 			colonIndex := strings.IndexByte(data, ':')
@@ -108,7 +109,7 @@ func ParseHTTPRequest(c net.Conn) HTTPRequest {
 		}
 		buffer.WriteString(data)
 	}
-	return HTTPRequest{ip, port, buffer.Bytes()}
+	return HTTPRequest{ip, port, buffer.Bytes(), tunnel}
 }
 
 func sendRequest(data []byte, ip string, port string) []byte {
