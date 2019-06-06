@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	mapuint16 "torgo/concurrent_uint16map"
+	mapuint32 "torgo/concurrent_uint32map"
 	p "torgo/proxy"
 	r "torgo/regagent"
 )
@@ -42,7 +44,7 @@ const (
 	extendFailed uint8 = 12
 )
 
-const bufferSize int = 1000
+const bufferSize int = 10
 const circuitLength int = 3
 const maxDataSize int = 497
 
@@ -61,17 +63,36 @@ type relay struct {
 }
 
 // Maps from router ID to a sending channel.
-var currentConnections = make(map[uint32](chan []byte))
+var currentConnections = mapuint32.New()
+
+//var currentConnections2 = make(map[uint32](chan []byte))
+//var currentConnectionsLock2 = sync.RWMutex{}
+
+func currentConnectionsRead(routerID uint32) chan []byte {
+	//currentConnectionsLock.RLock()
+	//defer currentConnectionsLock.RUnlock()
+	result, _ := currentConnections.Get(routerID)
+	return result.(chan []byte)
+}
 
 // Maps from a circuit to a reading channel.
 var circuitToInput = make(map[circuit](chan []byte))
+var circuitToInputLock = sync.RWMutex{}
 
 var circuitToReply = make(map[circuit](chan []byte))
+var circuitToReplyLock = sync.RWMutex{}
 
 // incorrect, can have multiple streams per circuit
 var circuitToIsEnd = make(map[circuit](bool))
 
-var streamToReceiver = make(map[uint16](chan []byte))
+var streamToReceiver2 = make(map[uint16](chan []byte))
+
+var streamToReceiver = mapuint16.New()
+
+func streamToReceiverRead(streamID uint16) chan []byte {
+	result, _ := streamToReceiver.Get(streamID)
+	return result.(chan []byte)
+}
 
 // Stores a value if we initiated the TCP connection to the agent.
 var initiatedConnection = make(map[uint32]bool)
@@ -126,7 +147,7 @@ func deleteRouter(targetRouterID uint32) {
 			delete(circuitToIsEnd, k)
 			delete(circuitToIsEnd, v)
 		}
-		delete(currentConnections, targetRouterID)
+		//		delete(currentConnections, targetRouterID)
 		delete(initiatedConnection, targetRouterID)
 	}
 }
@@ -138,10 +159,10 @@ func StartRouter(routerName string, group string) {
 		}
 
 		fmt.Printf("Routing table forward: %+v, backward %+v\n", routingTableForward, routingTableBackward)
-		fmt.Printf("Current connections: %+v\n", currentConnections)
+		//		fmt.Printf("Current connections: %+v\n", currentConnections)
 		fmt.Printf("Initiated connection: %+v\n", initiatedConnection)
 		fmt.Printf("First hop circuit: %+v\n", firstCircuit)
-		fmt.Printf("Stream to data: %+v\n\n", streamToReceiver)
+		//		fmt.Printf("Stream to data: %+v\n\n", streamToReceiver)
 		cleanup()
 		os.Exit(1)
 	}()
@@ -193,8 +214,14 @@ func StartRouter(routerName string, group string) {
 			fmt.Printf("Retrying with router %d\n", circuitNodes[0].Data)
 		}
 	}
-	firstHopConnection := currentConnections[firstCircuit.agentID]
+	fmt.Println("Getting a lock")
+	//	currentConnectionsLock.RLock()
+	firstHopConnection := currentConnectionsRead(firstCircuit.agentID)
+	//	currentConnectionsLock.RUnlock()
+	fmt.Println("UNLOCKING!")
+	circuitToReplyLock.Lock()
 	circuitToReply[firstCircuit] = make(chan []byte, bufferSize)
+	circuitToReplyLock.Unlock()
 	go watchChannel(firstCircuit)
 	for i := 1; i < circuitLength; i++ {
 		var body []byte
@@ -205,7 +232,10 @@ func StartRouter(routerName string, group string) {
 		binary.BigEndian.PutUint32(body[len(address)+1:], circuitNodes[i].Data)
 		relay := createRelay(firstCircuit.circuitID, 0, 0, uint16(len(body)), extend, body)
 		firstHopConnection <- relay
-		reply := <-circuitToReply[firstCircuit]
+		circuitToReplyLock.RLock()
+		waitChan := circuitToReply[firstCircuit]
+		circuitToReplyLock.RUnlock()
+		reply := <-waitChan
 		relayReply := parseRelay(reply)
 		if relayReply.relayCommand != extended {
 			fmt.Printf("Failed to extend to router %d\n", circuitNodes[i].Data)
@@ -231,7 +261,9 @@ func createCircuit(targetRouterID uint32, address string) circuit {
 	for !openConnectionIfNotExists(address, targetRouterID) {
 		return circuit{0, 0}
 	}
-	targetConnection := currentConnections[targetRouterID]
+	//currentConnectionsLock.RLock()
+	targetConnection := currentConnectionsRead(targetRouterID)
+	//currentConnectionsLock.RUnlock()
 	_, odd := initiatedConnection[targetRouterID]
 	newCircuitID := uint16(2 * rand.Intn(100000))
 	if odd {
@@ -263,7 +295,9 @@ func createCircuit(targetRouterID uint32, address string) circuit {
 }
 
 func openConnectionIfNotExists(address string, targetRouterID uint32) bool {
-	_, ok := currentConnections[targetRouterID]
+	//currentConnectionsLock.RLock()
+	_, ok := currentConnections.Get(targetRouterID)
+	//currentConnectionsLock.RUnlock()
 	return ok || openConnection(address, targetRouterID)
 }
 
@@ -285,9 +319,16 @@ func openConnection(address string, targetRouterID uint32) bool {
 	if replyType != opened {
 		return false
 	}
-	if _, ok := currentConnections[targetRouterID]; !ok {
-		currentConnections[targetRouterID] = make(chan []byte, bufferSize)
-	}
+	//currentConnectionsLock.RLock()
+	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize))
+	// if _, ok := currentConnections[targetRouterID]; !ok {
+	// 	//currentConnectionsLock.RUnlock()
+	// 	//currentConnectionsLock.Lock()
+	// 	currentConnections[targetRouterID] = make(chan []byte, bufferSize)
+	// 	//currentConnectionsLock.Unlock()
+	// } else {
+	// 	//currentConnectionsLock.RUnlock()
+	// }
 	initiatedConnection[targetRouterID] = true
 	go handleConnection(conn, targetRouterID)
 	return true
@@ -325,14 +366,19 @@ func acceptConnection(conn net.Conn) {
 		return
 	}
 	// If it's a self-connection, we're already listening to ourselves.
-	if _, ok := currentConnections[targetRouterID]; !ok {
-		currentConnections[targetRouterID] = make(chan []byte, bufferSize)
-	}
+	//currentConnectionsLock.RLock()
+	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize))
+	// if _, ok := currentConnections[targetRouterID]; !ok {
+	// 	currentConnections[targetRouterID] = make(chan []byte, bufferSize)
+	// }
+	//currentConnectionsLock.RUnlock()
 	handleConnection(conn, targetRouterID)
 }
 
 func handleConnection(conn net.Conn, targetRouterID uint32) {
-	toSend := currentConnections[targetRouterID]
+	//currentConnectionsLock.RLock()
+	toSend := currentConnectionsRead(targetRouterID)
+	//currentConnectionsLock.RUnlock()
 	// Thread that blocks on data to send and sends it.
 	go func() {
 		for {
@@ -359,7 +405,7 @@ func handleConnection(conn net.Conn, targetRouterID uint32) {
 		_, err := conn.Read(cell)
 		if err != nil {
 			fmt.Printf("Routing table forward: %+v, backward %+v\n", routingTableForward, routingTableBackward)
-			fmt.Printf("Current connections: %+v\n", currentConnections)
+			//			fmt.Printf("Current connections: %+v\n", currentConnections)
 			fmt.Printf("Initiated connection: %+v\n", initiatedConnection)
 			fmt.Printf("First hop circuit: %+v\n", firstCircuit)
 			//			fmt.Printf("Streams: %+v\n\n", circuitToStream)
@@ -367,7 +413,10 @@ func handleConnection(conn net.Conn, targetRouterID uint32) {
 			fmt.Println(err)
 			fmt.Printf("Error on connection from %d\n", targetRouterID)
 			conn.Close()
-			delete(currentConnections, targetRouterID)
+			//currentConnectionsLock.Lock()
+			currentConnections.Remove(targetRouterID)
+			//			delete(currentConnections, targetRouterID)
+			//currentConnectionsLock.Unlock()
 			return
 		}
 		circuitID, cellType := cellCIDAndType(cell)
@@ -419,8 +468,8 @@ func extendRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 		targetRouterID := binary.BigEndian.Uint32(r.body[(clen(r.body))+1:])
 		if targetRouterID == routerID {
 			// If we're trying to extend a relay to ourselves, don't!
-			currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-				r.digest, 0, extended, nil)
+			sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+				r.digest, 0, extended, nil))
 			return
 		}
 		result := createCircuit(targetRouterID, address)
@@ -428,26 +477,30 @@ func extendRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 			routingTableForward[c] = result
 			routingTableBackward[result] = c
 			delete(circuitToIsEnd, c)
-			currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-				r.digest, 0, extended, nil)
+			sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+				r.digest, 0, extended, nil))
 			go watchChannel(result)
 		} else {
-			currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-				r.digest, 0, extendFailed, nil)
+			sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+				r.digest, 0, extendFailed, nil))
 		}
 	} else {
 		// If we're not the end of the relay, just foward the message.
 		endPoint := routingTableForward[c]
 		binary.BigEndian.PutUint16(cell[:2], endPoint.circuitID)
-		currentConnections[endPoint.agentID] <- cell
+		sendCellToAgent(endPoint.agentID, cell)
 	}
 }
 
 // Handles all messages sent by agent A on circuit C.
 func watchChannel(c circuit) {
+	circuitToReplyLock.RLock()
 	_, ok := circuitToReply[c]
+	circuitToReplyLock.RUnlock()
 	if !ok {
+		circuitToReplyLock.Lock()
 		circuitToReply[c] = make(chan []byte, bufferSize)
+		circuitToReplyLock.Unlock()
 	}
 	for {
 		fmt.Println(circuitToInput)
@@ -462,44 +515,62 @@ func watchChannel(c circuit) {
 			switch r.relayCommand {
 			case extend:
 				fmt.Println("extend")
-				go extendRelay(r, c, endOfRelay, cell)
+				extendRelay(r, c, endOfRelay, cell)
 			case begin:
-				fmt.Println("begin")
+				//	fmt.Println("begin")
 				go beginRelay(r, c, endOfRelay, cell)
-				fmt.Println("begin done")
+			//	fmt.Println("begin done")
 			case end:
-				fmt.Println("end")
-				go endStream(r, c, endOfRelay, cell)
-				fmt.Println("end done")
+				//	fmt.Println("end")
+				endStream(r, c, endOfRelay, cell)
+			//	fmt.Println("end done")
 			case data:
-				fmt.Println("data")
-				//	go func() {
+				//	fmt.Println("data")
+				//go func() {
 				previousCircuit, back := routingTableBackward[c]
 				nextCircuit, front := routingTableForward[c]
 				if back {
+					//	fmt.Println("Forwarding")
+					//	fmt.Printf("Size of forward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
 					// If the circuit is travelling backwards.
 					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("backwarding size %d\n", len(currentConnections[previousCircuit.agentID]))
-					currentConnections[previousCircuit.agentID] <- cell
+					//					fmt.Printf("backwarding size %d\n", len(currentConnections[previousCircuit.agentID]))
+					sendCellToAgent(previousCircuit.agentID, cell)
 				} else if front {
+					//		fmt.Println("Backwarding")
 					binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-					fmt.Printf("fowrard size %d\n", len(currentConnections[nextCircuit.agentID]))
-					currentConnections[nextCircuit.agentID] <- cell
+					//					fmt.Printf("fowrard size %d\n", len(currentConnections[nextCircuit.agentID]))
+					sendCellToAgent(nextCircuit.agentID, cell)
 				} else {
 					// This must be the endpoint, since there's nowhere to route it.
-					fmt.Printf("Stream to receiver size %d\n", len(streamToReceiver[r.streamID]))
-					streamToReceiver[r.streamID] <- r.body
+					//					fmt.Printf("Stream to receiver size %d\n", len(streamToReceiver[r.streamID]))
+					//					fmt.Println(streamToReceiver)
+					//					fmt.Println(r.streamID)
+					fmt.Printf("About to put data on stream %d, size: %d\n", r.streamID, len(streamToReceiverRead(r.streamID)))
+					streamToReceiverRead(r.streamID) <- r.body
 				}
 				//	}()
 				fmt.Println("data complete")
+			case connected:
+				// Connected, extended, begin failed, extend failed.
+				previousCircuit, ok := routingTableBackward[c]
+				if !ok {
+					streamToReceiverRead(r.streamID) <- cell
+				} else {
+					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+					sendCellToAgent(previousCircuit.agentID, cell)
+				}
+				fmt.Println("connected done")
 			default:
 				// Connected, extended, begin failed, extend failed.
 				previousCircuit, ok := routingTableBackward[c]
 				if !ok {
+					circuitToReplyLock.RLock()
 					circuitToReply[c] <- cell
+					circuitToReplyLock.RUnlock()
 				} else {
 					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					currentConnections[previousCircuit.agentID] <- cell
+					sendCellToAgent(previousCircuit.agentID, cell)
 				}
 				fmt.Println("default done")
 			}
@@ -509,20 +580,26 @@ func watchChannel(c circuit) {
 	}
 }
 
+func sendCellToAgent(agentID uint32, cell []byte) {
+	//currentConnectionsLock.RLock()
+	currentConnectionsRead(agentID) <- cell
+	//currentConnectionsLock.RUnlock()
+}
+
 func endStream(r relay, c circuit, endOfRelay bool, cell []byte) {
 	previousCircuit, back := routingTableBackward[c]
 	nextCircuit, front := routingTableForward[c]
 	if back {
 		// If the circuit is travelling backwards.
 		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-		currentConnections[previousCircuit.agentID] <- cell
+		sendCellToAgent(previousCircuit.agentID, cell)
 	} else if front {
 		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-		currentConnections[nextCircuit.agentID] <- cell
+		sendCellToAgent(nextCircuit.agentID, cell)
 	} else {
-		_, ok := streamToReceiver[r.streamID]
+		val, ok := streamToReceiver.Get(r.streamID)
 		if ok {
-			close(streamToReceiver[r.streamID])
+			close(val.(chan []byte))
 		}
 		//delete(streamToReceiver, r.streamID)
 	}
@@ -532,7 +609,7 @@ func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 	if !endOfRelay {
 		endPoint := routingTableForward[c]
 		binary.BigEndian.PutUint16(cell[:2], endPoint.circuitID)
-		currentConnections[endPoint.agentID] <- cell
+		sendCellToAgent(endPoint.agentID, cell)
 		return
 	}
 	fmt.Println("beginning relay")
@@ -541,22 +618,23 @@ func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 	if err != nil {
 		fmt.Println(err)
 		fmt.Println(address)
-		currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-			r.digest, 0, beginFailed, nil)
+		sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+			r.digest, 0, beginFailed, nil))
 		return
 	}
 
-	if _, ok := streamToReceiver[r.streamID]; ok {
+	if _, ok := streamToReceiver.Get(r.streamID); ok {
 		// Stream ID is not unique.
 		fmt.Println("Stream ID is not unique!!!")
-		currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-			r.digest, 0, beginFailed, nil)
+		sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+			r.digest, 0, beginFailed, nil))
 		return
 	}
-	streamToReceiver[r.streamID] = make(chan []byte, bufferSize)
+	streamToReceiver.Set(r.streamID, make(chan []byte, bufferSize))
+	fmt.Printf("Created stream %d\n", r.streamID)
 	go handleStreamEnd(conn, r.streamID, c)
-	currentConnections[c.agentID] <- createRelay(r.circuitID, r.streamID,
-		r.digest, 0, connected, nil)
+	sendCellToAgent(c.agentID, createRelay(r.circuitID, r.streamID,
+		r.digest, 0, connected, nil))
 	circuitToIsEnd[c] = true
 }
 
@@ -565,7 +643,7 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 	go func() {
 		defer conn.Close()
 		for {
-			request, alive := <-streamToReceiver[streamID]
+			request, alive := <-streamToReceiverRead(streamID)
 			if !alive {
 				//	delete(streamToReceiver, streamID)
 				return
@@ -579,9 +657,10 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 		if err != nil {
 			fmt.Printf("Stream %d\tserver has no more data.\n", streamID)
 			toSend := createRelay(c.circuitID, streamID, 0, 0, end, nil)
-			currentConnections[c.agentID] <- toSend
-			close(streamToReceiver[streamID])
-			delete(streamToReceiver, streamID)
+			sendCellToAgent(c.agentID, toSend)
+			close(streamToReceiverRead(streamID))
+			streamToReceiver.Remove(streamID)
+			//			delete(streamToReceiver, streamID)
 			return
 		}
 		sendData(c, streamID, 0, buffer[:n])
@@ -602,7 +681,7 @@ func routerServer(l net.Listener) {
 
 func sendData(c circuit, streamID uint16, digest uint32, body []byte) {
 	relay := createRelay(c.circuitID, streamID, digest, uint16(len(body)), data, body)
-	currentConnections[c.agentID] <- relay
+	sendCellToAgent(c.agentID, relay)
 }
 
 // DATA MANIPULATION FUNCTIONS
@@ -630,6 +709,7 @@ func parseRelay(cell []byte) relay {
 	digest := binary.BigEndian.Uint32(cell[7:11])
 	bodyLength := binary.BigEndian.Uint16(cell[11:13])
 	relayCommand := cell[13]
+	fmt.Printf("Slice bound: %d\n", 14+bodyLength)
 	body := cell[14:(14 + bodyLength)]
 	return relay{circuitID, streamID, digest, bodyLength, relayCommand, body}
 }
@@ -660,13 +740,15 @@ func createStream(streamID uint16, address string) bool {
 	body = append(body, 0)
 	relay := createRelay(firstCircuit.circuitID, streamID, 0, uint16(len(body)),
 		begin, body)
-	currentConnections[firstCircuit.agentID] <- relay
+	sendCellToAgent(firstCircuit.agentID, relay)
 	fmt.Printf("Waiting for a reply on circuit %+v\n", firstCircuit)
 	// This won't work, there can be multiple streams created at once.
-	reply := <-circuitToReply[firstCircuit]
 	fmt.Printf("received  reply\n")
+	streamToReceiver.Set(streamID, make(chan []byte, bufferSize))
+	reply := <-streamToReceiverRead(streamID)
 	relayReply := parseRelay(reply)
 	if relayReply.relayCommand != connected {
+		streamToReceiver.Remove(streamID)
 		return false
 	}
 	fmt.Printf("Stream %d\tConnected to %s\n", streamID, address)
@@ -694,14 +776,19 @@ func proxyServer(port uint16) {
 func handleProxyConnection(conn net.Conn) {
 	header := p.ParseHTTPRequest(conn)
 	// need to make sure this is a unique stream.
-	streamID := uint16(rand.Intn(1000000))
+	ok := true
+	streamID := uint16(0)
+	for ok {
+		streamID = uint16(rand.Intn(1000000))
+		_, ok = streamToReceiver.Get(streamID)
+	}
 	if !createStream(streamID, header.IP+":"+header.Port) {
 		fmt.Printf("Could not connect to %s.\n", header.IP+":"+header.Port)
 		conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		conn.Close()
 		return
 	}
-	streamToReceiver[streamID] = make(chan []byte, bufferSize)
+	//	streamToReceiver[streamID] = make(chan []byte, bufferSize)
 	if !header.HTTPS {
 		// Now that we have a stream, we send over the initial request via a data
 		// message.
@@ -710,21 +797,25 @@ func handleProxyConnection(conn net.Conn) {
 			sendData(firstCircuit, streamID, 0, request)
 		}
 		for {
-			reply, alive := <-streamToReceiver[streamID]
+			reply, alive := <-streamToReceiverRead(streamID)
 			if !alive {
-				delete(streamToReceiver, streamID)
+				streamToReceiver.Remove(streamID)
+				//				delete(streamToReceiver, streamID)
 				conn.Close()
 				return
 			}
 			conn.Write(reply)
 		}
 	} else {
+		conn.Close()
+		return
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 		go func() {
 			for {
-				reply, alive := <-streamToReceiver[streamID]
+				reply, alive := <-streamToReceiverRead(streamID)
 				if !alive {
-					delete(streamToReceiver, streamID)
+					//					streamToReceiver.Remove(streamID)
+					//					delete(streamToReceiver, streamID)
 					conn.Close()
 					return
 				}
@@ -744,7 +835,7 @@ func handleProxyConnection(conn net.Conn) {
 				return
 			}
 			reply := createRelay(firstCircuit.circuitID, streamID, 0, uint16(n), data, buffer[:n])
-			currentConnections[firstCircuit.agentID] <- reply
+			sendCellToAgent(firstCircuit.agentID, reply)
 		}
 	}
 }
