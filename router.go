@@ -224,6 +224,7 @@ func StartRouter(routerName string, group string) {
 	go routerServer(l)
 	fmt.Println("Fetching other routers...")
 	responses = agent.Fetch("Tor61Router-" + group)
+	fmt.Println("Fetched...")
 	for len(responses) < 2 {
 		fmt.Println("No other routers online. Waiting 5 seconds and retrying...")
 		time.Sleep(3 * time.Second)
@@ -233,10 +234,12 @@ func StartRouter(routerName string, group string) {
 	var circuitNodes []r.FetchResponse
 	potentialFirstNode := responses[rand.Intn(len(responses))]
 	for potentialFirstNode.Data == routerID {
+		fmt.Println("fi")
 		potentialFirstNode = responses[rand.Intn(len(responses))]
 	}
 	potentialLastNode := responses[rand.Intn(len(responses))]
 	for potentialLastNode.Data == routerID {
+		fmt.Println("fi2")
 		potentialLastNode = responses[rand.Intn(len(responses))]
 	}
 	circuitNodes = append(circuitNodes, potentialFirstNode)
@@ -246,6 +249,7 @@ func StartRouter(routerName string, group string) {
 	circuitNodes = append(circuitNodes, potentialLastNode)
 	firstCircuit = circuit{0, 0}
 	for (firstCircuit == circuit{0, 0}) {
+		fmt.Println("Attempting to create circuit")
 		firstCircuit = createCircuit(circuitNodes[0].Data,
 			circuitNodes[0].IP+":"+strconv.Itoa(int(circuitNodes[0].Port)))
 		// If this node failed, try another.
@@ -285,6 +289,8 @@ func StartRouter(routerName string, group string) {
 			i--
 		} else {
 			fmt.Printf("Successfully extended to %d\n\n", circuitNodes[i].Data)
+			fmt.Println(relayReply)
+			fmt.Println(reply)
 		}
 		// fmt.Printf("Routing table forward: %+v, backward %+v\n", routingTableForward, routingTableBackward)
 		// fmt.Printf("Current connections: %+v\n", currentConnections)
@@ -474,7 +480,7 @@ func handleConnection(conn net.Conn, targetRouterID uint32) {
 			return
 		}
 		circuitID, cellType := cellCIDAndType(cell)
-		//	fmt.Printf("%d: Received message from %d on circuit %d of type %d\n", routerID, targetRouterID, circuitID, cellType)
+		fmt.Printf("%d: Received message from %d on circuit %d of type %d\n", routerID, targetRouterID, circuitID, cellType)
 		// if cellType == relayCell {
 		// 	fmt.Printf("Relay of type: %d\n", parseRelay(cell).relayCommand)
 		// 	fmt.Printf("Stream: %d\n", parseRelay(cell).streamID)
@@ -562,20 +568,22 @@ func watchChannel(c circuit) {
 	for {
 		//		fmt.Println(circuitToInput)
 		inputs, _ := circuitToInputRead(c)
+		log.Println("waiting for data")
 		cell := <-inputs
+
 		_, cellType := cellCIDAndType(cell)
 		_, endOfRelay := circuitToIsEndRead(c)
 		// The circuitID should already be known.
 		switch cellType {
 		case relayCell:
 			r := parseRelay(cell)
-			//			fmt.Printf("data received on the cell %v, length %d, type %d\n", c, len(circuitToInput[c]), r.relayCommand)
+			log.Printf("data received on the cell %v, length %d, type %d\n", c, len(circuitToInput[c]), r.relayCommand)
 			switch r.relayCommand {
 			case extend:
 				//	fmt.Println("extend")
 				extendRelay(r, c, endOfRelay, cell)
 			case begin:
-				//	fmt.Println("begin")
+				//fmt.Println("begin")
 				go beginRelay(r, c, endOfRelay, cell)
 			//	fmt.Println("begin done")
 			case end:
@@ -583,7 +591,7 @@ func watchChannel(c circuit) {
 				endStream2(r, c, endOfRelay, cell)
 			//	fmt.Println("end done")
 			case data:
-				//	fmt.Println("data")
+				fmt.Printf("data stream %d\n", r.streamID)
 				//		go func() {
 				previousCircuit, back := routingTableBackward[c]
 				nextCircuit, front := routingTableForward[c]
@@ -608,10 +616,13 @@ func watchChannel(c circuit) {
 					//					fmt.Printf("Length of circuit to input: %d\n", len(circuitToInput[c]))
 					channel := streamToReceiverRead(r.streamID)
 					if channel == nil {
+						log.Printf("Nil channel for stream %d\n", r.streamID)
 						continue
 					}
 					channel <- cell
 				}
+				log.Printf("Data complete")
+
 			//	}()
 			//	fmt.Println("data complete")
 			case connected:
@@ -914,7 +925,7 @@ func proxyServer(port uint16) {
 
 func handleProxyConnection(conn net.Conn) {
 	header := p.ParseHTTPRequest(conn)
-	if header.HTTPS {
+	if header.HTTPS || header.IP == "" {
 		conn.Close()
 		return
 	}
@@ -925,7 +936,7 @@ func handleProxyConnection(conn net.Conn) {
 		streamID = uint16(rand.Intn(1000000))
 		_, ok = streamToReceiver.Get(streamID)
 	}
-	fmt.Println("Hoping to create stream %d to %s\n", streamID, header.IP+":"+header.Port)
+	fmt.Printf("Hoping to create stream %d to %s\n", streamID, header.IP+":"+header.Port)
 	if !createStream(streamID, header.IP+":"+header.Port) {
 		fmt.Printf("Could not connect to %s.\n", header.IP+":"+header.Port)
 		fmt.Println(string(header.Data))
@@ -969,7 +980,7 @@ func handleProxyConnection(conn net.Conn) {
 
 		}
 		//streamToReceiver.Get(streamID)
-		close(streamToReceiverRead(streamID))
+		//		close(streamToReceiverRead(streamID))
 		streamToReceiver.Remove(streamID)
 		conn.Close()
 	} else {
