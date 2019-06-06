@@ -294,7 +294,6 @@ func StartRouter(routerName string, group string) {
 	}
 	fmt.Printf("Created circuit: %+v\n", circuitNodes)
 	proxyServer(proxyPort)
-
 }
 
 // Creates a circuit between this router and the target router.
@@ -410,7 +409,7 @@ func acceptConnection(conn net.Conn) {
 	}
 	// If it's a self-connection, we're already listening to ourselves.
 	//currentConnectionsLock.RLock()
-	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, 10000000))
+	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize))
 	// if _, ok := currentConnections[targetRouterID]; !ok {
 	// 	currentConnections[targetRouterID] = make(chan []byte, bufferSize)
 	// }
@@ -443,8 +442,7 @@ func handleConnection(conn net.Conn, targetRouterID uint32) {
 			// fmt.Printf("Streams: %+v\n", circuitToStream)
 			//			fmt.Printf("About to write...")
 			n, err := conn.Write(cell)
-			if len(toSend) > 10000000-2 {
-
+			if len(toSend) > 10000000-100 {
 				fmt.Printf("Wrote data, size %d, wwrote n %d\n", len(toSend), n)
 			}
 			//
@@ -761,6 +759,10 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 			for {
 				// In HTTP, in case there is more to a request.
 				cell, _ := <-streamToReceiverRead(streamID)
+				if cell == nil {
+					log.Printf("Closing stream %d\n", streamID)
+					return
+				}
 				fmt.Println(cell)
 				//	if !alive {
 				//streamToReceiver.Remove(streamID)
@@ -791,6 +793,7 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 				toSend := createRelay(c.circuitID, streamID, 0, 0, end, nil)
 				sendCellToAgent(c.agentID, toSend)
 				//BABA **	close(streamToReceiverRead(streamID))
+				streamToReceiverRead(streamID) <- nil
 				streamToReceiver.Remove(streamID)
 				//			delete(streamToReceiver, streamID)
 				conn.Close()
@@ -966,7 +969,7 @@ func handleProxyConnection(conn net.Conn) {
 
 		}
 		//streamToReceiver.Get(streamID)
-		//close(streamToReceiverRead(streamID))
+		close(streamToReceiverRead(streamID))
 		streamToReceiver.Remove(streamID)
 		conn.Close()
 	} else {
