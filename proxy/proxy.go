@@ -59,6 +59,8 @@ func ParseHTTPRequest(c net.Conn) HTTPRequest {
 	for {
 		data, err := reader.ReadString('\n')
 		if err != nil {
+			fmt.Println("Proxy error!")
+			fmt.Println(err)
 			break
 		}
 		if data == "\r\n" {

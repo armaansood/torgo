@@ -5,8 +5,11 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strconv"
 	"sync"
@@ -44,7 +47,7 @@ const (
 	extendFailed uint8 = 12
 )
 
-const bufferSize int = 10000000
+const bufferSize int = 1000
 const circuitLength int = 3
 const maxDataSize int = 497
 
@@ -121,8 +124,7 @@ var streamToReceiver = mapuint16.New()
 func streamToReceiverRead(streamID uint16) chan []byte {
 	result, ok := streamToReceiver.Get(streamID)
 	if !ok {
-		fmt.Printf("Error guy %d\n", streamID)
-		//	return nil
+		return nil
 	}
 	return result.(chan []byte)
 }
@@ -199,7 +201,8 @@ func StartRouter(routerName string, group string) {
 		//		fmt.Printf("Current connections: %+v\n", currentConnections)
 		fmt.Printf("Initiated connection: %+v\n", initiatedConnection)
 		fmt.Printf("First hop circuit: %+v\n", firstCircuit)
-		//		fmt.Printf("Stream to data: %+v\n\n", streamToReceiver)
+		d := streamToReceiver.Keys()
+		fmt.Printf("Stream to data: %+v\n\n", d)
 		cleanup()
 		os.Exit(1)
 	}()
@@ -289,6 +292,7 @@ func StartRouter(routerName string, group string) {
 		// fmt.Printf("First hop circuit: %+v\n", firstCircuit)
 		// fmt.Printf("Streams: %+v\n\n", circuitToStream)
 	}
+	fmt.Printf("Created circuit: %+v\n", circuitNodes)
 	proxyServer(proxyPort)
 
 }
@@ -578,7 +582,7 @@ func watchChannel(c circuit) {
 			//	fmt.Println("begin done")
 			case end:
 				//	fmt.Println("end")
-				endStream(r, c, endOfRelay, cell)
+				endStream2(r, c, endOfRelay, cell)
 			//	fmt.Println("end done")
 			case data:
 				//	fmt.Println("data")
@@ -606,11 +610,9 @@ func watchChannel(c circuit) {
 					//					fmt.Printf("Length of circuit to input: %d\n", len(circuitToInput[c]))
 					channel := streamToReceiverRead(r.streamID)
 					if channel == nil {
-						//							fmt.Println(string(r.body))
-						//
-						//							fmt.Println("FAIL")
+						continue
 					}
-					channel <- r.body
+					channel <- cell
 				}
 			//	}()
 			//	fmt.Println("data complete")
@@ -682,6 +684,37 @@ func endStream(r relay, c circuit, endOfRelay bool, cell []byte) {
 	}
 }
 
+func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
+	previousCircuit, back := routingTableBackward[c]
+	nextCircuit, front := routingTableForward[c]
+	if back {
+		//	fmt.Println("Forwarding")
+		//					fmt.Printf("Size of backward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
+		// If the circuit is travelling backwards.
+		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+		//					fmt.Printf("backwarding size %d\n", len(currentConnectionsRead(previousCircuit.agentID))
+		sendCellToAgent(previousCircuit.agentID, cell)
+	} else if front {
+		//					fmt.Println("forwardwarding")
+		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
+		//					fmt.Printf("fowrard size %d\n", len(currentConnectionsRead(nextCircuit.agentID)))
+		sendCellToAgent(nextCircuit.agentID, cell)
+	} else {
+		// This must be the endpoint, since there's nowhere to route it.
+		//					fmt.Printf("Stream to receiver size %d\n", len(streamToReceiver[r.streamID]))
+		//					fmt.Println(streamToReceiver)
+		//					fmt.Println(r.streamID)
+		//					fmt.Printf("stream %d, size: %d\n", r.streamID, len(streamToReceiverRead(r.streamID)))
+		//					fmt.Printf("Length of circuit to input: %d\n", len(circuitToInput[c]))
+		channel := streamToReceiverRead(r.streamID)
+		if channel == nil {
+			fmt.Println("FAIL")
+			return
+		}
+		channel <- cell
+	}
+}
+
 func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 	if !endOfRelay {
 		endPoint := routingTableForward[c]
@@ -717,35 +750,54 @@ func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 
 // The server end of the relay.
 func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
-	go func() {
-		defer conn.Close()
-		for {
-			request, alive := <-streamToReceiverRead(streamID)
-			if !alive {
-				streamToReceiver.Remove(streamID)
+	cell, _ := <-streamToReceiverRead(streamID)
+	relayReply := parseRelay(cell)
+	if relayReply.relayCommand == end {
+		conn.Close()
+		return
+	} else if relayReply.relayCommand == data {
+		conn.Write(relayReply.body)
+		go func() {
+			for {
+				// In HTTP, in case there is more to a request.
+				cell, _ := <-streamToReceiverRead(streamID)
+				fmt.Println(cell)
+				//	if !alive {
+				//streamToReceiver.Remove(streamID)
 				//	delete(streamToReceiver, streamID)
+				//		return
+				//	}
+				relayReply = parseRelay(cell)
+				fmt.Println("More of a request...")
+				fmt.Println(string(relayReply.body))
+				if relayReply.relayCommand == data {
+					_, err := conn.Write(relayReply.body)
+					if err != nil {
+						fmt.Println("server error: ")
+						fmt.Println(err)
+						fmt.Println(string(relayReply.body))
+						return
+					}
+				}
+			}
+		}()
+		// todo, manually handle https separately??
+		for {
+			buffer := make([]byte, maxDataSize)
+			n, err := conn.Read(buffer)
+			if err != nil {
+				fmt.Println(err)
+				fmt.Printf("Stream %d\tserver has no more data.\n", streamID)
+				toSend := createRelay(c.circuitID, streamID, 0, 0, end, nil)
+				sendCellToAgent(c.agentID, toSend)
+				//BABA **	close(streamToReceiverRead(streamID))
+				streamToReceiver.Remove(streamID)
+				//			delete(streamToReceiver, streamID)
+				conn.Close()
 				return
 			}
-			_, err := conn.Write(request)
-			if err != nil {
-				fmt.Println("server error: ")
-				fmt.Println(err)
-			}
+			sendData(c, streamID, 0, buffer[:n])
 		}
-	}()
-	for {
-		buffer := make([]byte, maxDataSize)
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Printf("Stream %d\tserver has no more data.\n", streamID)
-			toSend := createRelay(c.circuitID, streamID, 0, 0, end, nil)
-			sendCellToAgent(c.agentID, toSend)
-			close(streamToReceiverRead(streamID))
-			//			streamToReceiver.Remove(streamID)
-			//			delete(streamToReceiver, streamID)
-			return
-		}
-		sendData(c, streamID, 0, buffer[:n])
 	}
 }
 
@@ -873,6 +925,7 @@ func handleProxyConnection(conn net.Conn) {
 	fmt.Println("Hoping to create stream %d to %s\n", streamID, header.IP+":"+header.Port)
 	if !createStream(streamID, header.IP+":"+header.Port) {
 		fmt.Printf("Could not connect to %s.\n", header.IP+":"+header.Port)
+		fmt.Println(string(header.Data))
 		conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		conn.Close()
 		return
@@ -884,18 +937,38 @@ func handleProxyConnection(conn net.Conn) {
 		// message.
 		splitData := splitUpResult(header.Data, maxDataSize)
 		for _, request := range splitData {
+			// First, we send all the data...
 			sendData(firstCircuit, streamID, 0, request)
 		}
 		for {
-			reply, alive := <-streamToReceiverRead(streamID)
-			if !alive {
-				streamToReceiver.Remove(streamID)
-				//				delete(streamToReceiver, streamID)
-				conn.Close()
-				return
+			// Then, we read all the data (until the other end gets an EOF).
+			reply, _ := <-streamToReceiverRead(streamID)
+			replyRelay := parseRelay(reply)
+			if replyRelay.relayCommand == data {
+				_, err := conn.Write(replyRelay.body)
+				if err != nil {
+					fmt.Println(err)
+					fmt.Println("cleitn error")
+					break
+				}
+			} else if replyRelay.relayCommand == end {
+				// Then the server read in EOF.
+				fmt.Println("Client received an END.")
+				break
 			}
-			conn.Write(reply)
+			// if !alive {
+			// 	fmt.Println("closing connection, method 1")
+			// 	streamToReceiver.Remove(streamID)
+			// 	//				delete(streamToReceiver, streamID)
+			// 	//	conn.Close()
+			// 	break
+			// }
+
 		}
+		//streamToReceiver.Get(streamID)
+		//close(streamToReceiverRead(streamID))
+		streamToReceiver.Remove(streamID)
+		conn.Close()
 	} else {
 		conn.Close()
 		return
@@ -955,6 +1028,7 @@ func clen(n []byte) int {
 }
 
 func main() {
+
 	if len(os.Args) != 4 {
 		usage()
 	}
@@ -976,7 +1050,11 @@ func main() {
 	fmt.Println(routerName)
 	proxyPort = uint16(proxy)
 	routerID = uint32(routerNum)
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	StartRouter(routerName, flag.Arg(0))
+
 }
 
 func usage() {
