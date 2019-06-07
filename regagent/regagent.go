@@ -182,7 +182,11 @@ func (a *Agent) Register(serviceIP string, servicePort uint16,
 		return false
 	}
 	a.registeredAddresses[addr.String()] = true
-	return a.performRegistration(serviceIP, servicePort, serviceData, len, serviceName, false)
+	if !a.performRegistration(serviceIP, servicePort, serviceData, len, serviceName, false) {
+		delete(a.registeredAddresses, addr.String())
+		return false
+	}
+	return true
 }
 
 func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
