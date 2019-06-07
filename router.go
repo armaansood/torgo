@@ -48,7 +48,7 @@ const (
 	extendFailed uint8 = 12
 )
 
-const bufferSize int = 10
+const bufferSize int = 10000
 const circuitLength int = 3
 const maxDataSize int = 497
 
@@ -135,7 +135,7 @@ func streamToReceiverRead(streamID uint16) chan []byte {
 var initiatedConnection = make(map[uint32]bool)
 
 // TODO: Use concurrent maps
-
+// TODO: store a list of circuits wwhere v weres the last one
 // TODO: store a map/set of circuits where we're the last one
 
 var firstCircuit circuit
@@ -368,7 +368,7 @@ func openConnection(address string, targetRouterID uint32) bool {
 		return false
 	}
 	//currentConnectionsLock.RLock()
-	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize))
+	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize*1000))
 	// if _, ok := currentConnections[targetRouterID]; !ok {
 	// 	//currentConnectionsLock.RUnlock()
 	// 	//currentConnectionsLock.Lock()
@@ -415,7 +415,7 @@ func acceptConnection(conn net.Conn) {
 	}
 	// If it's a self-connection, we're already listening to ourselves.
 	//currentConnectionsLock.RLock()
-	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize))
+	currentConnections.SetIfAbsent(targetRouterID, make(chan []byte, bufferSize*1000))
 	// if _, ok := currentConnections[targetRouterID]; !ok {
 	// 	currentConnections[targetRouterID] = make(chan []byte, bufferSize)
 	// }
@@ -520,12 +520,13 @@ func handleConnection(conn net.Conn, targetRouterID uint32) {
 				continue
 			}
 			inputs, _ := circuitToInputRead(circuit{circuitID, targetRouterID})
-			//	fmt.Printf("Got the lock, size is %d, channel is %+v\n", len(inputs), inputs)
+
 			if inputs == nil {
 				fmt.Println("nil ipnut")
 				fmt.Println(cell)
 				continue
 			}
+			fmt.Printf("Got the lock, size is %d, channel is %+v\n", len(inputs), inputs)
 			inputs <- cell
 			//	fmt.Println("Success on put")
 		}
@@ -604,6 +605,7 @@ func watchChannel(c circuit) {
 			//	fmt.Println("begin done")
 			case end:
 				//	fmt.Println("end")
+				// fix this to actually end the stream
 				endStream2(r, c, endOfRelay, cell)
 			//	fmt.Println("end done")
 			case data:
@@ -616,8 +618,9 @@ func watchChannel(c circuit) {
 					//					fmt.Printf("Size of backward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
 					// If the circuit is travelling backwards.
 					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("backwarding size %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
+					fmt.Printf("backwarding size %d circuit %v\n", len(currentConnectionsRead(previousCircuit.agentID)), previousCircuit)
 					sendCellToAgent(previousCircuit.agentID, cell)
+					fmt.Printf("sent\n")
 				} else if front {
 					//					fmt.Println("forwardwarding")
 					binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
@@ -792,10 +795,14 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 		go func() {
 			for {
 				// In HTTP, in case there is more to a request.
-				cell, _ := <-streamToReceiverRead(streamID)
+				channel := streamToReceiverRead(streamID)
+				cell, _ := <-channel
 				if cell == nil {
 					log.Printf("Closing stream %d\n", streamID)
 					return
+					// for {
+					// 	<-channel
+					// }
 				}
 				//	if !alive {
 				//streamToReceiver.Remove(streamID)
