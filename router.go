@@ -617,103 +617,91 @@ func watchChannel(c circuit) {
 				extendRelay(r, c, endOfRelay, cell)
 			case begin:
 				beginRelay(r, c, endOfRelay, cell)
-			//	fmt.Println("begin done")
 			case end:
-				//	fmt.Println("end")
-				// fix this to actually end the stream
-				endStream2(r, c, endOfRelay, cell)
-			//	fmt.Println("end done")
+				endStream(r, c, endOfRelay, cell)
 			case data:
-				//	fmt.Printf("data stream %d\n", r.streamID)
-				//		go func() {
-				previousCircuit, back := routingTableBackward[c]
-				nextCircuit, front := routingTableForward[c]
-				if back {
-					//	fmt.Println("Forwarding")
-					//					fmt.Printf("Size of backward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
-					// If the circuit is travelling backwards.
-					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					//					fmt.Printf("backwarding size %d circuit %v\n", len(currentConnectionsRead(previousCircuit.agentID)), previousCircuit)
-					sendCellToAgent(previousCircuit.agentID, cell)
-					//					fmt.Printf("sent\n")
-				} else if front {
-					//					fmt.Println("forwardwarding")
-					binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-					//					fmt.Printf("fowrard size %d\n", len(currentConnectionsRead(nextCircuit.agentID)))
-					sendCellToAgent(nextCircuit.agentID, cell)
-				} else {
-					// This must be the endpoint, since there's nowhere to route it.
-					//					fmt.Printf("Stream to receiver size %d\n", len(streamToReceiver[r.streamID]))
-					//					fmt.Println(streamToReceiver)
-					//					fmt.Println(r.streamID)
-					//					fmt.Printf("stream %d, size: %d\n", r.streamID, len(streamToReceiverRead(r.streamID)))
-					//					fmt.Printf("Length of circuit to input: %d\n", len(circuitToInput[c]))
-					channel := streamToReceiverRead(r.streamID)
-					if channel == nil {
-						//						log.Printf("Nil DATA channel for stream %d\n", r.streamID)
-						continue
-					}
-					//					fmt.Printf("Size of streamToReceiver: %d\n", len(channel))
-					channel <- cell
-				}
-
-			//	}()
-			//	fmt.Println("data complete")
+				handleData(r, c, cell)
 			case connected:
-				// Connected, extended, begin failed, extend failed.
-				previousCircuit, ok := routingTableBackward[c]
-				if !ok {
-					channel := streamToReceiverRead(r.streamID)
-					if channel == nil {
-						log.Printf("Nil CONNECTED channel for stream %d\n", r.streamID)
-						continue
-					}
-					channel <- cell
-				} else {
-					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("Attempting to send data connected... size is %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
-					sendCellToAgent(previousCircuit.agentID, cell)
-				}
+				handleStreamMessages(r, c, cell)
 			case beginFailed:
-				// Connected, extended, begin failed, extend failed.
-				previousCircuit, ok := routingTableBackward[c]
-				if !ok {
-					channel := streamToReceiverRead(r.streamID)
-					if channel == nil {
-						//						log.Printf("Nil BEGIN FAILED channel for stream %d\n", r.streamID)
-						continue
-					}
-					channel <- cell
-				} else {
-					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("Attempting to send data begin failed... size is %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
-					sendCellToAgent(previousCircuit.agentID, cell)
-				}
-			//	fmt.Println("connected done")
-			default:
-				// Connected, extended, begin failed, extend failed.
-				previousCircuit, ok := routingTableBackward[c]
-				if !ok {
-					circuitToReplyLock.RLock()
-
-					channel := circuitToReply[c]
-					if channel == nil {
-						fmt.Println("other data nil")
-						continue
-					}
-					channel <- cell
-
-					circuitToReplyLock.RUnlock()
-				} else {
-					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("Attempting to send data... size is %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
-					sendCellToAgent(previousCircuit.agentID, cell)
-				}
-				//	fmt.Println("default done")
+				handleStreamMessages(r, c, cell)
+			case extended:
+				handleCircuitMessages(r, c, cell)
+			case extendFailed:
+				handleCircuitMessages(r, c, cell)
 			}
 
 			//			case destroy:
 		}
+	}
+}
+
+func handleCircuitMessages(r relay, c circuit, cell []byte) {
+	// Extended, extend failed.
+	previousCircuit, ok := routingTableBackward[c]
+	if !ok {
+		circuitToReplyLock.RLock()
+		channel := circuitToReply[c]
+		if channel == nil {
+			return
+		}
+		circuitToReplyLock.RUnlock()
+		channel <- cell
+	} else {
+		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+		sendCellToAgent(previousCircuit.agentID, cell)
+	}
+}
+
+func handleStreamMessages(r relay, c circuit, cell []byte) {
+	// Connected, extended, begin failed, extend failed.
+	if !routeCellBackwards(r, c, cell) {
+		channel := streamToReceiverRead(r.streamID)
+		if channel == nil {
+			return
+		}
+		channel <- cell
+	}
+}
+
+func routeCellBackwards(r relay, c circuit, cell []byte) bool {
+	previousCircuit, back := routingTableBackward[c]
+	if back {
+		// If the circuit is travelling backwards.
+		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+		sendCellToAgent(previousCircuit.agentID, cell)
+		return true
+	}
+	return false
+}
+
+func routeCellForwards(r relay, c circuit, cell []byte) bool {
+	nextCircuit, front := routingTableForward[c]
+	if front {
+		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
+		sendCellToAgent(nextCircuit.agentID, cell)
+		return true
+	}
+	return false
+}
+
+func handleData(r relay, c circuit, cell []byte) {
+	previousCircuit, back := routingTableBackward[c]
+	nextCircuit, front := routingTableForward[c]
+	if back {
+		// If the circuit is travelling backwards.
+		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+		sendCellToAgent(previousCircuit.agentID, cell)
+	} else if front {
+		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
+		sendCellToAgent(nextCircuit.agentID, cell)
+	} else {
+		// This must be the endpoint, since there's nowhere to route it.
+		channel := streamToReceiverRead(r.streamID)
+		if channel == nil {
+			return
+		}
+		channel <- cell
 	}
 }
 
@@ -726,27 +714,6 @@ func sendCellToAgent(agentID uint32, cell []byte) {
 }
 
 func endStream(r relay, c circuit, endOfRelay bool, cell []byte) {
-	previousCircuit, back := routingTableBackward[c]
-	nextCircuit, front := routingTableForward[c]
-	if back {
-		// If the circuit is travelling backwards.
-		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-		sendCellToAgent(previousCircuit.agentID, cell)
-	} else if front {
-		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-		sendCellToAgent(nextCircuit.agentID, cell)
-	} else {
-		val, ok := streamToReceiver.Get(r.streamID)
-		if ok {
-			close(val.(chan []byte))
-		}
-		fmt.Printf("Ended stream %d\n", r.streamID)
-		//delete(streamToReceiver, r.streamID)
-	}
-}
-
-func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
-
 	previousCircuit, back := routingTableBackward[c]
 	nextCircuit, front := routingTableForward[c]
 	if back {
