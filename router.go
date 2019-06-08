@@ -813,6 +813,7 @@ func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 
 // The server end of the relay.
 func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
+	defer fmt.Printf("Closing %d\n", streamID)
 	channel := streamToReceiverRead(streamID)
 	if channel == nil {
 		return
@@ -828,6 +829,7 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 	} else if relayReply.relayCommand == data {
 		conn.Write(relayReply.body)
 		go func() {
+			defer fmt.Printf("Closing %d\n", streamID)
 			channel := streamToReceiverRead(streamID)
 			for {
 				// In HTTP, in case there is more to a request.
@@ -854,13 +856,13 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 				channel = streamToReceiverRead(streamID)
 			}
 			for {
-				log.Printf("Emptying stream %d, %d\n", streamID, len(channel))
-				d, alive := <-channel
+				//			log.Printf("Emptying stream %d, %d\n", streamID, len(channel))
+				_, alive := <-channel
 				if !alive {
 					fmt.Println("Closing...")
 					return
 				}
-				fmt.Println(d)
+				//			fmt.Println(d)
 			}
 		}()
 		// todo, manually handle https separately??
@@ -1010,6 +1012,7 @@ func proxyServer(port uint16) {
 }
 
 func handleProxyConnection(conn net.Conn) {
+
 	header := p.ParseHTTPRequest(conn)
 	if header.IP == "" {
 		conn.Close()
@@ -1022,6 +1025,7 @@ func handleProxyConnection(conn net.Conn) {
 		streamID = uint16(rand.Intn(1000000))
 		_, ok = streamToReceiver.Get(streamID)
 	}
+	defer fmt.Printf("Closing %d\n", streamID)
 	v, _ := circuitToInputRead(firstCircuit)
 	fmt.Printf("LEN of longo2 is %d\n", len(v))
 	fmt.Printf("LEN of longo is %d\n", len(currentConnectionsRead(firstCircuit.agentID)))
@@ -1086,6 +1090,7 @@ func handleProxyConnection(conn net.Conn) {
 	} else {
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 		go func() {
+			defer fmt.Printf("Closing %d\n", streamID)
 			channel := streamToReceiverRead(streamID)
 			for {
 				// Reading data from the Tor network to the browser.
