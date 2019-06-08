@@ -608,19 +608,15 @@ func watchChannel(c circuit) {
 		// The circuitID should already be known.
 		switch cellType {
 		case relayCell:
-			//			fmt.Println(cell)
 			r := parseRelay(cell)
 			if r.body == nil {
 				continue
 			}
-			//	log.Printf("data received on the cell %v, length %d, type %d\n", c, len(circuitToInput[c]), r.relayCommand)
 			switch r.relayCommand {
 			case extend:
-				//	fmt.Println("extend")
 				extendRelay(r, c, endOfRelay, cell)
 			case begin:
-				//fmt.Println("begin")
-				go beginRelay(r, c, endOfRelay, cell)
+				beginRelay(r, c, endOfRelay, cell)
 			//	fmt.Println("begin done")
 			case end:
 				//	fmt.Println("end")
@@ -769,6 +765,7 @@ func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
 		}
 		close(channel)
 		streamToReceiver.Remove(r.streamID)
+		fmt.Printf("Ending stream %d\n", r.streamID)
 		//		channel <- cell
 		return
 	}
@@ -1046,32 +1043,35 @@ func handleProxyConnection(conn net.Conn) {
 			sendData(firstCircuit, streamID, 0, request)
 			fmt.Println(a)
 		}
+		// Shouldn't reread, actually, and the endstream shouldn't delete.
 		channel := streamToReceiverRead(streamID)
 		for {
 			// Then, we read all the data (until the other end gets an EOF).
 			if channel == nil {
 				// Channel must have been closed.
+				fmt.Println("Nil channel")
 				conn.Close()
 				return
 			}
 			cell, alive := <-channel
 			if !alive {
 				conn.Close()
+				fmt.Println("Not alive channel")
 				return
 			}
 			replyRelay := parseRelay(cell)
 			if replyRelay.relayCommand == data {
+				fmt.Println(replyRelay)
 				_, err := conn.Write(replyRelay.body)
 				if err != nil {
 					fmt.Println(err)
 					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
 					sendCellToAgent(firstCircuit.agentID, toSend)
 					// This means that we may never hear from the endStream.
-					streamToReceiver.Remove(streamID)
+					//		streamToReceiver.Remove(streamID)
 					break
 				}
 			}
-			channel = streamToReceiverRead(streamID)
 			// if !alive {
 			// 	fmt.Println("closing connection, method 1")
 			// 	streamToReceiver.Remove(streamID)
@@ -1104,6 +1104,7 @@ func handleProxyConnection(conn net.Conn) {
 				cell, alive := <-channel
 				if !alive {
 					conn.Close()
+
 					return
 				}
 				relayReply := parseRelay(cell)
