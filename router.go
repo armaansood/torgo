@@ -160,7 +160,6 @@ var wg sync.WaitGroup
 
 func cleanup() {
 	fmt.Println("Cleaning up...")
-	agent.Unregister("127.0.0.1", port)
 	circuits := getAllCircuitsOnThisRouter()
 	fmt.Println(circuits)
 	for _, c := range circuits {
@@ -202,6 +201,7 @@ func StartRouter(routerName string, group int, address string) {
 		for scanner.Scan() {
 		}
 		go cleanup()
+		agent.Unregister("127.0.0.1", port)
 		fmt.Println("Shutting down router in 3 seconds...")
 		fmt.Printf("Routing table forward: %+v, backward %+v\n", routingTableForward, routingTableBackward)
 		fmt.Printf("Initiated connection: %+v\n", initiatedConnection)
