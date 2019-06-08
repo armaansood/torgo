@@ -48,7 +48,7 @@ const (
 
 const bufferSize int = 10000
 const sendBufferSize int = 10000000
-const circuitLength int = 3
+const circuitLength int = 1
 const maxDataSize int = 497
 
 type circuit struct {
@@ -824,6 +824,9 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 			for {
 				// In HTTP, in case there is more to a request.
 				channel := streamToReceiverRead(streamID)
+				if channel == nil {
+					return
+				}
 				cell, _ := <-channel
 				if cell == nil {
 					log.Printf("Closing stream %d\n", streamID)
@@ -993,7 +996,7 @@ func proxyServer(port uint16) {
 
 func handleProxyConnection(conn net.Conn) {
 	header := p.ParseHTTPRequest(conn)
-	if header.HTTPS || header.IP == "" {
+	if header.IP == "" {
 		conn.Close()
 		return
 	}
@@ -1035,6 +1038,7 @@ func handleProxyConnection(conn net.Conn) {
 					fmt.Println("cleitn error")
 					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
 					sendCellToAgent(firstCircuit.agentID, toSend)
+					fmt.Println(toSend)
 					break
 				}
 			} else if replyRelay.relayCommand == end {
@@ -1053,48 +1057,76 @@ func handleProxyConnection(conn net.Conn) {
 		}
 		//streamToReceiver.Get(streamID)
 		//		close(streamToReceiverRead(streamID))
-		toEmpty := streamToReceiverRead(streamID)
-		streamToReceiver.Remove(streamID)
-		conn.Close()
+
+	} else {
+		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		go func() {
+			for {
+				// Reading data from the Tor network to the browser.
+				channel := streamToReceiverRead(streamID)
+				if channel == nil {
+					return
+				}
+				cell, alive := <-channel
+				if !alive {
+					//					streamToReceiver.Remove(streamID)
+					//					delete(streamToReceiver, streamID)
+					return
+				}
+				if cell == nil {
+					for {
+						log.Printf("Emptiyng https connection\n")
+						<-channel
+					}
+				}
+				relayReply := parseRelay(cell)
+				if relayReply.relayCommand == data {
+					_, err := conn.Write(relayReply.body)
+					if err != nil {
+						fmt.Println("client error https edditon")
+						fmt.Println(err)
+						return
+					}
+				} else if relayReply.relayCommand == end {
+					fmt.Println("https client received an END")
+					conn.Close()
+					return
+				}
+			}
+		}()
 		for {
-			_, alive := <-toEmpty
-			fmt.Println("emptying data on stream")
-			if !alive {
-				fmt.Println("dead")
+			// Sending data from the browser to the Tor network.
+			buffer := make([]byte, maxDataSize)
+			n, err := conn.Read(buffer)
+			if err != nil {
+				fmt.Println(err)
+				fmt.Printf("Stream %d\tbrowser has no more data.\n", streamID)
+				toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
+				sendCellToAgent(firstCircuit.agentID, toSend)
+				//				currentConnectionsRead(firstCircuit.agentID) <- toSend
+				streamToReceiverRead(streamID) <- nil
+				streamToReceiver.Remove(streamID)
+				conn.Close()
+				//	close(streamToReceiver[streamID])
+				//				delete(streamToReceiver, streamID)
+				//				conn.Close()
 				return
 			}
+			sendData(firstCircuit, streamID, 0, buffer[:n])
+			// reply := createRelay(firstCircuit.circuitID, streamID, 0, uint16(n), data, buffer[:n])
+			// sendCellToAgent(firstCircuit.agentID, reply)
 		}
-	} else {
-		conn.Close()
-		return
-		// conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-		// go func() {
-		// 	for {
-		// 		reply, alive := <-streamToReceiverRead(streamID)
-		// 		if !alive {
-		// 			//					streamToReceiver.Remove(streamID)
-		// 			//					delete(streamToReceiver, streamID)
-		// 			conn.Close()
-		// 			return
-		// 		}
-		// 		conn.Write(reply)
-		// 	}
-		// }()
-		// for {
-		// 	buffer := make([]byte, maxDataSize)
-		// 	n, err := conn.Read(buffer)
-		// 	if err != nil {
-		// 		fmt.Printf("Stream %d\tbrowser has no more data.\n", streamID)
-		// 		//	toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
-		// 		//	currentConnections[firstCircuit.agentID] <- toSend
-		// 		//	close(streamToReceiver[streamID])
-		// 		//				delete(streamToReceiver, streamID)
-		// 		//				conn.Close()
-		// 		return
-		// 	}
-		// 	reply := createRelay(firstCircuit.circuitID, streamID, 0, uint16(n), data, buffer[:n])
-		// 	sendCellToAgent(firstCircuit.agentID, reply)
-		// }
+	}
+	toEmpty := streamToReceiverRead(streamID)
+	streamToReceiver.Remove(streamID)
+	conn.Close()
+	for {
+		_, alive := <-toEmpty
+		fmt.Println("emptying data on stream")
+		if !alive {
+			fmt.Println("dead")
+			return
+		}
 	}
 }
 
