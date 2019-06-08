@@ -880,7 +880,7 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 				// end message. Otherwise, we risk the chance of closing while
 				// someone sends data.
 				//				streamToReceiverRead(streamID) <- nil
-				//streamToReceiver.Remove(streamID)
+				streamToReceiver.Remove(streamID)
 				conn.Close()
 				return
 			}
@@ -1066,6 +1066,8 @@ func handleProxyConnection(conn net.Conn) {
 					fmt.Println(err)
 					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
 					sendCellToAgent(firstCircuit.agentID, toSend)
+					// This means that we may never hear from the endStream.
+					streamToReceiver.Remove(streamID)
 					break
 				}
 			}
@@ -1132,7 +1134,7 @@ func handleProxyConnection(conn net.Conn) {
 				sendCellToAgent(firstCircuit.agentID, toSend)
 				fmt.Println("Sending end")
 				//				currentConnectionsRead(firstCircuit.agentID) <- toSend
-
+				streamToReceiver.Remove(streamID)
 				conn.Close()
 				//	close(streamToReceiver[streamID])
 				//				delete(streamToReceiver, streamID)
