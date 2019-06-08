@@ -46,8 +46,8 @@ const (
 	extendFailed uint8 = 12
 )
 
-const bufferSize int = 10
-const sendBufferSize int = 10
+const bufferSize int = 10000
+const sendBufferSize int = 10000000
 const circuitLength int = 3
 const maxDataSize int = 497
 
@@ -1033,8 +1033,8 @@ func handleProxyConnection(conn net.Conn) {
 				if err != nil {
 					fmt.Println(err)
 					fmt.Println("cleitn error")
-					//					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
-					//					sendCellToAgent(firstCircuit.agentID, toSend)
+					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
+					sendCellToAgent(firstCircuit.agentID, toSend)
 					break
 				}
 			} else if replyRelay.relayCommand == end {
