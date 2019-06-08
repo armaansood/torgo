@@ -48,7 +48,7 @@ const (
 
 const bufferSize int = 10000
 const sendBufferSize int = 10000000
-const circuitLength int = 1
+const circuitLength int = 3
 const maxDataSize int = 497
 
 type circuit struct {
@@ -158,6 +158,10 @@ var wg sync.WaitGroup
 func cleanup() {
 	fmt.Println("Cleaning up...")
 	agent.Unregister("127.0.0.1", port)
+}
+
+func deleteCircuit(targetCircuit circuit) {
+	//TODO implement this
 }
 
 func deleteRouter(targetRouterID uint32) {
@@ -631,13 +635,13 @@ func watchChannel(c circuit) {
 					//					fmt.Printf("Size of backward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
 					// If the circuit is travelling backwards.
 					binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-					fmt.Printf("backwarding size %d circuit %v\n", len(currentConnectionsRead(previousCircuit.agentID)), previousCircuit)
+					//					fmt.Printf("backwarding size %d circuit %v\n", len(currentConnectionsRead(previousCircuit.agentID)), previousCircuit)
 					sendCellToAgent(previousCircuit.agentID, cell)
-					fmt.Printf("sent\n")
+					//					fmt.Printf("sent\n")
 				} else if front {
 					//					fmt.Println("forwardwarding")
 					binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-					fmt.Printf("fowrard size %d\n", len(currentConnectionsRead(nextCircuit.agentID)))
+					//					fmt.Printf("fowrard size %d\n", len(currentConnectionsRead(nextCircuit.agentID)))
 					sendCellToAgent(nextCircuit.agentID, cell)
 				} else {
 					// This must be the endpoint, since there's nowhere to route it.
@@ -744,33 +748,26 @@ func endStream(r relay, c circuit, endOfRelay bool, cell []byte) {
 }
 
 func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
-	previousCircuit, back := routingTableBackward[c]
-	nextCircuit, front := routingTableForward[c]
-	if back {
-		//	fmt.Println("Forwarding")
-		//					fmt.Printf("Size of backward: %d\n", len(currentConnectionsRead(previousCircuit.agentID)))
-		// If the circuit is travelling backwards.
-		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
-		//					fmt.Printf("backwarding size %d\n", len(currentConnectionsRead(previousCircuit.agentID))
-		sendCellToAgent(previousCircuit.agentID, cell)
-	} else if front {
-		//					fmt.Println("forwardwarding")
-		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
-		//					fmt.Printf("fowrard size %d\n", len(currentConnectionsRead(nextCircuit.agentID)))
-		sendCellToAgent(nextCircuit.agentID, cell)
-	} else {
+	if endOfRelay {
 		// This must be the endpoint, since there's nowhere to route it.
-		//					fmt.Printf("Stream to receiver size %d\n", len(streamToReceiver[r.streamID]))
-		//					fmt.Println(streamToReceiver)
-		//					fmt.Println(r.streamID)
-		//					fmt.Printf("stream %d, size: %d\n", r.streamID, len(streamToReceiverRead(r.streamID)))
-		//					fmt.Printf("Length of circuit to input: %d\n", len(circuitToInput[c]))
 		channel := streamToReceiverRead(r.streamID)
 		if channel == nil {
-			fmt.Println("FAIL")
 			return
 		}
 		channel <- cell
+		return
+	}
+	previousCircuit, back := routingTableBackward[c]
+	nextCircuit, front := routingTableForward[c]
+	if back {
+		// If the circuit is travelling backwards.
+		binary.BigEndian.PutUint16(cell[:2], previousCircuit.circuitID)
+		sendCellToAgent(previousCircuit.agentID, cell)
+	} else if front {
+		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
+		sendCellToAgent(nextCircuit.agentID, cell)
+	} else {
+		log.Fatal("BIG FAILURE")
 	}
 }
 
@@ -842,18 +839,12 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 				//		return
 				//	}
 				relayReply = parseRelay(cell)
-				fmt.Println("More of a request...")
-				fmt.Println(string(relayReply.body))
 				if relayReply.relayCommand == data {
 					_, err := conn.Write(relayReply.body)
 					if err != nil {
-						fmt.Println("server error: ")
-						fmt.Println(err)
-						fmt.Println(string(relayReply.body))
 						return
 					}
 				} else if relayReply.relayCommand == end {
-					fmt.Println("Server received END")
 					conn.Close()
 					return
 				}
