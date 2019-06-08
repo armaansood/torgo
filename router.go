@@ -590,6 +590,7 @@ func watchChannel(c circuit) {
 				routeCellForwards(c, cell)
 			}
 			destroyCircuit(c)
+			fmt.Println("DESTROY")
 			if (firstCircuit == circuit{0, 0}) {
 				go createInitialCircuit()
 			}
