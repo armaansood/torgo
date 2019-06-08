@@ -178,6 +178,7 @@ func deleteRouter(targetRouterID uint32) {
 			circuitToIsEndLock.Lock()
 			delete(circuitToIsEnd, k)
 			delete(circuitToIsEnd, v)
+			fmt.Println("Deleting router")
 			circuitToIsEndLock.Unlock()
 		}
 		//		delete(currentConnections, targetRouterID)
@@ -603,6 +604,7 @@ func watchChannel(c circuit) {
 
 		_, cellType := cellCIDAndType(cell)
 		_, endOfRelay := circuitToIsEndRead(c)
+
 		// The circuitID should already be known.
 		switch cellType {
 		case relayCell:
@@ -748,15 +750,7 @@ func endStream(r relay, c circuit, endOfRelay bool, cell []byte) {
 }
 
 func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
-	if endOfRelay {
-		// This must be the endpoint, since there's nowhere to route it.
-		channel := streamToReceiverRead(r.streamID)
-		if channel == nil {
-			return
-		}
-		channel <- cell
-		return
-	}
+
 	previousCircuit, back := routingTableBackward[c]
 	nextCircuit, front := routingTableForward[c]
 	if back {
@@ -767,7 +761,16 @@ func endStream2(r relay, c circuit, endOfRelay bool, cell []byte) {
 		binary.BigEndian.PutUint16(cell[:2], nextCircuit.circuitID)
 		sendCellToAgent(nextCircuit.agentID, cell)
 	} else {
-		log.Fatal("BIG FAILURE")
+		// This must be the endpoint, since there's nowhere to route it.
+		channel := streamToReceiverRead(r.streamID)
+		if channel == nil {
+			fmt.Println("Channel end")
+			return
+		}
+		close(channel)
+		streamToReceiver.Remove(r.streamID)
+		//		channel <- cell
+		return
 	}
 }
 
@@ -810,7 +813,14 @@ func beginRelay(r relay, c circuit, endOfRelay bool, cell []byte) {
 
 // The server end of the relay.
 func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
-	cell, _ := <-streamToReceiverRead(streamID)
+	channel := streamToReceiverRead(streamID)
+	if channel == nil {
+		return
+	}
+	cell, alive := <-channel
+	if !alive {
+		return
+	}
 	relayReply := parseRelay(cell)
 	if relayReply.relayCommand == end {
 		conn.Close()
@@ -818,36 +828,39 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 	} else if relayReply.relayCommand == data {
 		conn.Write(relayReply.body)
 		go func() {
+			channel := streamToReceiverRead(streamID)
 			for {
 				// In HTTP, in case there is more to a request.
-				channel := streamToReceiverRead(streamID)
 				if channel == nil {
+					// Channel must have been closed.
+					conn.Close()
 					return
 				}
-				cell, _ := <-channel
-				if cell == nil {
-					log.Printf("Closing stream %d\n", streamID)
-
-					for {
-						log.Printf("Emptying stream %d\n", streamID)
-						<-channel
-					}
+				cell, alive := <-channel
+				if !alive {
+					conn.Close()
+					return
 				}
-				//	if !alive {
-				//streamToReceiver.Remove(streamID)
-				//	delete(streamToReceiver, streamID)
-				//		return
-				//	}
 				relayReply = parseRelay(cell)
 				if relayReply.relayCommand == data {
 					_, err := conn.Write(relayReply.body)
 					if err != nil {
-						return
+						// Connection must have been closed here.
+						// We now need to wait for the other end to
+						// close their side.
+						break
 					}
-				} else if relayReply.relayCommand == end {
-					conn.Close()
+				}
+				channel = streamToReceiverRead(streamID)
+			}
+			for {
+				log.Printf("Emptying stream %d, %d\n", streamID, len(channel))
+				d, alive := <-channel
+				if !alive {
+					fmt.Println("Closing...")
 					return
 				}
+				fmt.Println(d)
 			}
 		}()
 		// todo, manually handle https separately??
@@ -859,10 +872,13 @@ func handleStreamEnd(conn net.Conn, streamID uint16, c circuit) {
 				fmt.Printf("Stream %d\tserver has no more data.\n", streamID)
 				toSend := createRelay(c.circuitID, streamID, 0, 0, end, nil)
 				sendCellToAgent(c.agentID, toSend)
+				fmt.Println("Sending end")
 				//BABA **	close(streamToReceiverRead(streamID))
-				streamToReceiverRead(streamID) <- nil
-				streamToReceiver.Remove(streamID)
-				//			delete(streamToReceiver, streamID)
+				// We don't explicitly close the channel until we receive an
+				// end message. Otherwise, we risk the chance of closing while
+				// someone sends data.
+				//				streamToReceiverRead(streamID) <- nil
+				//streamToReceiver.Remove(streamID)
 				conn.Close()
 				return
 			}
@@ -904,6 +920,9 @@ func createRelay(circuitID uint16, streamID uint16, digest uint32,
 }
 
 func cellCIDAndType(cell []byte) (uint16, uint8) {
+	if cell == nil {
+		fmt.Println("nil??")
+	}
 	return binary.BigEndian.Uint16(cell[:2]), cell[2]
 }
 
@@ -956,7 +975,12 @@ func createStream(streamID uint16, address string) bool {
 	//	fmt.Printf("received  reply\n")
 
 	fmt.Printf("Waiting on stream %d\n", streamID)
-	reply := <-streamToReceiverRead(streamID)
+	channel := streamToReceiverRead(streamID)
+	reply, alive := <-channel
+	if !alive {
+		streamToReceiver.Remove(streamID)
+		return false
+	}
 	relayReply := parseRelay(reply)
 	if relayReply.relayCommand != connected {
 		fmt.Printf("Stream %d\tNot connected to %s\n", streamID, address)
@@ -1008,7 +1032,7 @@ func handleProxyConnection(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	fmt.Println("Created stream %d to %s.\n", streamID, header.IP+":"+header.Port)
+	fmt.Printf("Created stream %d to %s.\n", streamID, header.IP+":"+header.Port)
 	if !header.HTTPS {
 		// Now that we have a stream, we send over the initial request via a data
 		// message.
@@ -1018,25 +1042,30 @@ func handleProxyConnection(conn net.Conn) {
 			sendData(firstCircuit, streamID, 0, request)
 			fmt.Println(a)
 		}
+		channel := streamToReceiverRead(streamID)
 		for {
 			// Then, we read all the data (until the other end gets an EOF).
-			reply, _ := <-streamToReceiverRead(streamID)
-			replyRelay := parseRelay(reply)
+			if channel == nil {
+				// Channel must have been closed.
+				conn.Close()
+				return
+			}
+			cell, alive := <-channel
+			if !alive {
+				conn.Close()
+				return
+			}
+			replyRelay := parseRelay(cell)
 			if replyRelay.relayCommand == data {
 				_, err := conn.Write(replyRelay.body)
 				if err != nil {
 					fmt.Println(err)
-					fmt.Println("cleitn error")
 					toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
 					sendCellToAgent(firstCircuit.agentID, toSend)
-					fmt.Println(toSend)
 					break
 				}
-			} else if replyRelay.relayCommand == end {
-				// Then the server read in EOF.
-				fmt.Println("Client received an END.")
-				break
 			}
+			channel = streamToReceiverRead(streamID)
 			// if !alive {
 			// 	fmt.Println("closing connection, method 1")
 			// 	streamToReceiver.Remove(streamID)
@@ -1044,43 +1073,45 @@ func handleProxyConnection(conn net.Conn) {
 			// 	//	conn.Close()
 			// 	break
 			// }
-
 		}
-		//streamToReceiver.Get(streamID)
-		//		close(streamToReceiverRead(streamID))
-
+		conn.Close()
+		for {
+			_, alive := <-channel
+			fmt.Println("emptying data on stream brwoser")
+			if !alive {
+				fmt.Println("Closing browser stream...")
+				return
+			}
+		}
 	} else {
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 		go func() {
+			channel := streamToReceiverRead(streamID)
 			for {
 				// Reading data from the Tor network to the browser.
-				channel := streamToReceiverRead(streamID)
 				if channel == nil {
+					// Channel must have been closed.
+					conn.Close()
 					return
 				}
 				cell, alive := <-channel
 				if !alive {
-					//					streamToReceiver.Remove(streamID)
-					//					delete(streamToReceiver, streamID)
+					conn.Close()
 					return
-				}
-				if cell == nil {
-					for {
-						log.Printf("Emptiyng https connection\n")
-						<-channel
-					}
 				}
 				relayReply := parseRelay(cell)
 				if relayReply.relayCommand == data {
 					_, err := conn.Write(relayReply.body)
 					if err != nil {
-						fmt.Println("client error https edditon")
-						fmt.Println(err)
-						return
+						break
 					}
-				} else if relayReply.relayCommand == end {
-					fmt.Println("https client received an END")
-					conn.Close()
+				}
+				channel = streamToReceiverRead(streamID)
+			}
+			for {
+				_, alive := <-channel
+				if !alive {
+					fmt.Println("HTTPS, closing")
 					return
 				}
 			}
@@ -1094,9 +1125,9 @@ func handleProxyConnection(conn net.Conn) {
 				fmt.Printf("Stream %d\tbrowser has no more data.\n", streamID)
 				toSend := createRelay(firstCircuit.circuitID, streamID, 0, 0, end, nil)
 				sendCellToAgent(firstCircuit.agentID, toSend)
+				fmt.Println("Sending end")
 				//				currentConnectionsRead(firstCircuit.agentID) <- toSend
-				streamToReceiverRead(streamID) <- nil
-				streamToReceiver.Remove(streamID)
+
 				conn.Close()
 				//	close(streamToReceiver[streamID])
 				//				delete(streamToReceiver, streamID)
@@ -1108,17 +1139,7 @@ func handleProxyConnection(conn net.Conn) {
 			// sendCellToAgent(firstCircuit.agentID, reply)
 		}
 	}
-	toEmpty := streamToReceiverRead(streamID)
-	streamToReceiver.Remove(streamID)
-	conn.Close()
-	for {
-		_, alive := <-toEmpty
-		fmt.Println("emptying data on stream")
-		if !alive {
-			fmt.Println("dead")
-			return
-		}
-	}
+
 }
 
 func splitUpResult(result []byte, chunkSize int) [][]byte {
