@@ -241,6 +241,8 @@ func (a *Agent) regServerListener(port int, ip string) {
 		data := make([]byte, 1024)
 		_, remoteaddr, err := conn.ReadFromUDP(data)
 		if err != nil {
+			fmt.Println("err2")
+			fmt.Println(err)
 			continue
 		}
 		sequenceNumber, command, err := getDataType(data)
@@ -253,6 +255,7 @@ func (a *Agent) regServerListener(port int, ip string) {
 		ack := createHeader(sequenceNumber, ack)
 		_, err = conn.WriteToUDP(ack, remoteaddr)
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
 	}
