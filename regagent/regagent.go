@@ -69,6 +69,7 @@ func (a *Agent) listenForReplies() {
 		_, err := a.conn.Read(data)
 		if err != nil {
 			fmt.Println(err)
+			fmt.Println("issue with reading")
 			continue
 		}
 		_, _, err = getDataType(data)
@@ -87,8 +88,11 @@ func (a *Agent) sendMessage(message []byte, expectedReply uint8, messageType str
 		_, err := a.conn.Write(message)
 		if err != nil {
 			fmt.Println(err)
+			fmt.Println("issue with writing")
 			continue
 		}
+		fmt.Println("Wrote")
+		fmt.Println(message)
 		select {
 		case packet := <-a.replies:
 			packetSequenceNumber, command, err := getDataType(packet)
@@ -230,19 +234,19 @@ func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
 
 func (a *Agent) regServerListener(port int, ip string) {
 	defer a.wg.Done()
-	//	portString := strconv.Itoa(port)
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: []byte{0, 0, 0, 0}, Port: port, Zone: ""})
+	addr := net.UDPAddr{
+		Port: port,
+		IP:   net.ParseIP(ip),
+	}
+	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(conn.LocalAddr().(*net.UDPAddr))
 	defer conn.Close()
 	for {
 		data := make([]byte, 1024)
 		_, remoteaddr, err := conn.ReadFromUDP(data)
 		if err != nil {
-			fmt.Println("err2")
-			fmt.Println(err)
 			continue
 		}
 		sequenceNumber, command, err := getDataType(data)
@@ -255,7 +259,6 @@ func (a *Agent) regServerListener(port int, ip string) {
 		ack := createHeader(sequenceNumber, ack)
 		_, err = conn.WriteToUDP(ack, remoteaddr)
 		if err != nil {
-			fmt.Println(err)
 			continue
 		}
 	}

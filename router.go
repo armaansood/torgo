@@ -1006,11 +1006,9 @@ func splitUpResult(result []byte, chunkSize int) [][]byte {
 
 	for i := 0; i < len(result); i += chunkSize {
 		end := i + chunkSize
-
 		if end > len(result) {
 			end = len(result)
 		}
-
 		divided = append(divided, result[i:end])
 	}
 	return divided
