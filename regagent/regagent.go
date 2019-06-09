@@ -230,7 +230,7 @@ func (a *Agent) regServerListener(port int, ip string) {
 	defer a.wg.Done()
 	addr := net.UDPAddr{
 		Port: port,
-		IP:   net.ParseIP(ip),
+		IP:   net.ParseIP("0.0.0.0"),
 	}
 	fmt.Printf("Listening on %+v\n", addr)
 	conn, err := net.ListenUDP("udp", &addr)
