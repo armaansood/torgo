@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 )
@@ -53,15 +52,13 @@ func (a *Agent) StartAgent(regServerIP string, regServerPort string, debug bool)
 	address.WriteString(":")
 	address.WriteString(regServerPort)
 	conn, err := net.Dial("udp4", address.String())
-	fmt.Println(conn.RemoteAddr())
 	if err != nil {
 		log.Fatal(err)
 	}
 	a.conn = conn
 	pplusone := conn.LocalAddr().(*net.UDPAddr).Port + 1
 	a.wg.Add(2)
-	fmt.Println(GetOutboundIP())
-	go a.regServerListener(pplusone, GetOutboundIP())
+	go a.regServerListener(pplusone, conn.LocalAddr().(*net.UDPAddr).IP.String())
 	go a.listenForReplies()
 }
 
@@ -71,8 +68,6 @@ func (a *Agent) listenForReplies() {
 		data := make([]byte, 1024)
 		_, err := a.conn.Read(data)
 		if err != nil {
-			fmt.Println(err)
-			fmt.Println("issue with reading")
 			continue
 		}
 		_, _, err = getDataType(data)
@@ -90,12 +85,8 @@ func (a *Agent) sendMessage(message []byte, expectedReply uint8, messageType str
 	for i > 0 {
 		_, err := a.conn.Write(message)
 		if err != nil {
-			fmt.Println(err)
-			fmt.Println("issue with writing")
 			continue
 		}
-		fmt.Println("Wrote")
-		fmt.Println(message)
 		select {
 		case packet := <-a.replies:
 			packetSequenceNumber, command, err := getDataType(packet)
@@ -241,10 +232,7 @@ func (a *Agent) regServerListener(port int, ip string) {
 		Port: port,
 		IP:   net.ParseIP(ip),
 	}
-	conn, err := net.ListenUDP("udp", &addr)
-	fmt.Println(ip)
-	fmt.Println(port)
-	//	fmt.Println(
+	conn, err := net.ListenUDP("udp4", &addr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -259,9 +247,9 @@ func (a *Agent) regServerListener(port int, ip string) {
 		if err != nil || command != probe {
 			continue
 		}
-		if a.debug {
-			fmt.Println("I've been probed!")
-		}
+		//		if a.debug {
+		fmt.Println("I've been probed!")
+		//		}
 		ack := createHeader(sequenceNumber, ack)
 		_, err = conn.WriteToUDP(ack, remoteaddr)
 		if err != nil {
@@ -288,12 +276,4 @@ func createHeader(sequenceNumber uint8, command uint8) []byte {
 	header[2] = sequenceNumber
 	header[3] = command
 	return header
-}
-
-func GetOutboundIP() string {
-	conn, _ := net.Dial("udp", "8.8.8.8:80")
-	defer conn.Close()
-	localAddr := conn.LocalAddr().String()
-	idx := strings.LastIndex(localAddr, ":")
-	return localAddr[0:idx]
 }
