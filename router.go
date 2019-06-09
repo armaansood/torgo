@@ -285,14 +285,20 @@ fetch:
 		body = append(body, 0)
 		body = append(body, make([]byte, 4)...)
 		binary.BigEndian.PutUint32(body[len(address)+1:], circuitNodes[i].Data)
+		relayReply := relay{}
 		relay := createRelay(firstCircuit.circuitID, 0, 0, uint16(len(body)), extend, body)
 		firstHopConnection <- relay
 		circuitToReplyLock.RLock()
 		waitChan := circuitToReply[firstCircuit]
 		circuitToReplyLock.RUnlock()
-		reply := <-waitChan
-		relayReply := parseRelay(reply)
-		if relayReply.relayCommand != extended {
+		timeout := false
+		select {
+		case reply := <-waitChan:
+			relayReply = parseRelay(reply)
+		case <-time.After(5 * time.Second):
+			timeout = true
+		}
+		if timeout == true || relayReply.relayCommand != extended {
 			fmt.Printf("Failed to extend to router %d\n", circuitNodes[i].Data)
 			circuitNodes[i] = responses[rand.Intn(len(responses))]
 			if i == circuitLength-1 {
@@ -1047,8 +1053,6 @@ func main() {
 	proxyPort = uint16(proxy)
 	routerID = uint32(routerNum)
 	fmt.Printf("Router ID: %d\n", routerID)
-
-	fmt.Println(getOutboundIP())
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
