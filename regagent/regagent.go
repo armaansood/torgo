@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -58,7 +59,8 @@ func (a *Agent) StartAgent(regServerIP string, regServerPort string, debug bool)
 	a.conn = conn
 	pplusone := conn.LocalAddr().(*net.UDPAddr).Port + 1
 	a.wg.Add(2)
-	go a.regServerListener(pplusone, conn.LocalAddr().(*net.UDPAddr).IP.String())
+	fmt.Println(GetOutboundIP())
+	go a.regServerListener(pplusone, GetOutboundIP())
 	go a.listenForReplies()
 }
 
@@ -285,4 +287,12 @@ func createHeader(sequenceNumber uint8, command uint8) []byte {
 	header[2] = sequenceNumber
 	header[3] = command
 	return header
+}
+
+func GetOutboundIP() string {
+	conn, _ := net.Dial("udp", "8.8.8.8:80")
+	defer conn.Close()
+	localAddr := conn.LocalAddr().String()
+	idx := strings.LastIndex(localAddr, ":")
+	return localAddr[0:idx]
 }
