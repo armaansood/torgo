@@ -53,6 +53,7 @@ func (a *Agent) StartAgent(regServerIP string, regServerPort string, debug bool)
 	address.WriteString(":")
 	address.WriteString(regServerPort)
 	conn, err := net.Dial("udp", address.String())
+	fmt.Println(conn.RemoteAddr())
 	if err != nil {
 		log.Fatal(err)
 	}
