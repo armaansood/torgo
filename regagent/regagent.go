@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -230,19 +231,16 @@ func (a *Agent) performRegistration(serviceIP string, servicePort uint16,
 
 func (a *Agent) regServerListener(port int, ip string) {
 	defer a.wg.Done()
-	addr := net.UDPAddr{
-		Port: port,
-		IP:   net.ParseIP("0.0.0.0"),
-	}
-	fmt.Printf("Listening on %+v\n", addr)
-	conn, err := net.ListenUDP("udp", &addr)
+	portString := strconv.Itoa(port)
+	conn, err := net.ListenPacket("udp", ip+":"+portString)
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println(ip + ":" + portString)
 	defer conn.Close()
 	for {
 		data := make([]byte, 1024)
-		_, remoteaddr, err := conn.ReadFromUDP(data)
+		_, remoteaddr, err := conn.ReadFrom(data)
 		if err != nil {
 			continue
 		}
@@ -254,7 +252,7 @@ func (a *Agent) regServerListener(port int, ip string) {
 			fmt.Println("I've been probed!")
 		}
 		ack := createHeader(sequenceNumber, ack)
-		_, err = conn.WriteToUDP(ack, remoteaddr)
+		_, err = conn.WriteTo(ack, remoteaddr)
 		if err != nil {
 			continue
 		}
