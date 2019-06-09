@@ -247,9 +247,9 @@ func (a *Agent) regServerListener(port int, ip string) {
 		if err != nil || command != probe {
 			continue
 		}
-		//		if a.debug {
-		fmt.Println("I've been probed!")
-		//		}
+		if a.debug {
+			fmt.Println("I've been probed!")
+		}
 		ack := createHeader(sequenceNumber, ack)
 		_, err = conn.WriteToUDP(ack, remoteaddr)
 		if err != nil {

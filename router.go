@@ -1,3 +1,15 @@
+// Author: Armaan Sood
+// A simple overlay network based on Tor.
+// For educational purposes.
+//
+// If I had more time, I would make the code
+// more modular by creating a router struct that
+// can be passed to other classes, rather than using
+// this 1000+ line class.
+// I would also change the fnv32 hashing function of
+// the maps (from github.com/orcaman) to use Go's built-in
+// fnv32 function.
+
 package main
 
 import (
@@ -9,7 +21,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"strconv"
@@ -46,10 +57,14 @@ const (
 	extendFailed uint8 = 12
 )
 
+// Size of channels.
 const bufferSize int = 10000
-const sendBufferSize int = 10000000
+
+// Size of channel that TCP writes from.
+const sendBufferSize int = 1000000
+
 const circuitLength int = 3
-const maxDataSize int = 497
+const maxDataSize int = 498
 
 type circuit struct {
 	circuitID uint16
@@ -64,6 +79,9 @@ type relay struct {
 	relayCommand uint8
 	body         []byte
 }
+
+// TODO: Create structs for each map and
+// unify the design to only use RWMutexes.
 
 // Maps from router ID to a sending channel.
 var currentConnections = mapuint32.New()
@@ -93,9 +111,11 @@ func circuitToInputWrite(c circuit, channel chan []byte) {
 	circuitToInput[c] = channel
 }
 
+// Maps from a circuit to a replies channel (extended, created).
 var circuitToReply = make(map[circuit](chan []byte))
 var circuitToReplyLock = sync.RWMutex{}
 
+// Holds a circuit if it's the last hop.
 var circuitToIsEnd = make(map[circuit](bool))
 var circuitToIsEndLock = sync.RWMutex{}
 
@@ -112,6 +132,7 @@ func circuitToIsEndWrite(c circuit, value bool) {
 	circuitToIsEnd[c] = value
 }
 
+// Maps from a stream to a receiving channel.
 var streamToReceiverLock = sync.RWMutex{}
 var streamToReceiver = mapuint16.New()
 
@@ -179,7 +200,7 @@ func deleteRouter(targetRouterID uint32) {
 	currentConnections.Remove(targetRouterID)
 }
 
-func StartRouter(routerName string, group int, address string) {
+func startRouter(routerName string, group int, address string) {
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
@@ -187,13 +208,8 @@ func StartRouter(routerName string, group int, address string) {
 		go cleanup()
 		fmt.Printf("\nUnregistering...\n")
 		agent.Unregister(ipToRegister, port)
-		fmt.Println("Shutting down router in 3 seconds...")
-		fmt.Printf("Routing table forward: %+v, backward %+v\n", routingTableForward, routingTableBackward)
-		fmt.Printf("Initiated connection: %+v\n", initiatedConnection)
-		fmt.Printf("First hop circuit: %+v\n", firstCircuit)
-		d := streamToReceiver.Keys()
-		fmt.Printf("Stream to data: %+v\n\n", d)
-		time.Sleep(3 * time.Second)
+		fmt.Println("Shutting down router in 2 seconds...")
+		time.Sleep(2 * time.Second)
 		os.Exit(1)
 	}()
 
@@ -205,6 +221,9 @@ func StartRouter(routerName string, group int, address string) {
 	port = uint16(l.Addr().(*net.TCPAddr).Port)
 	fmt.Printf("Registering on %s with port %d\n", ipToRegister, port)
 	addressSplit := strings.Split(address, ":")
+	if len(addressSplit) != 2 {
+		log.Fatal("Incorrect registration server address!")
+	}
 	regServerIP := addressSplit[0]
 	regServerPort := addressSplit[1]
 	agent = new(r.Agent)
@@ -212,7 +231,7 @@ func StartRouter(routerName string, group int, address string) {
 	fmt.Printf("Attempting to register...\n")
 	for !(agent.Register(ipToRegister, port, routerID,
 		uint8(len(routerName)), routerName)) {
-		fmt.Println("Could not register self! Retrying...")
+		fmt.Println("Retrying...")
 		time.Sleep(3 * time.Second)
 	}
 	fmt.Printf("Registered router %d!\n\n", routerID)
@@ -249,7 +268,7 @@ fetch:
 	circuitNodes = append(circuitNodes, potentialLastNode)
 	firstCircuit = circuit{0, 0}
 	for (firstCircuit == circuit{0, 0}) {
-		fmt.Println("Attempting to create first hop circuit...")
+		fmt.Printf("Attempting to create first hop circuit with router %d...\n", circuitNodes[0].Data)
 		firstCircuit = createCircuit(circuitNodes[0].Data,
 			circuitNodes[0].IP+":"+strconv.Itoa(int(circuitNodes[0].Port)))
 		// If this node failed, try another.
@@ -312,7 +331,7 @@ fetch:
 			fmt.Printf("Successfully extended to %d!\n", circuitNodes[i].Data)
 		}
 	}
-	fmt.Printf("Created circuit: %+v\n\n", circuitNodes)
+	fmt.Printf("Created full circuit: %+v\n\n", circuitNodes)
 }
 
 // Creates a circuit between this router and the target router.
@@ -917,7 +936,6 @@ func handleProxyConnection(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	fmt.Printf("Created stream %d to %s.\n", streamID, header.IP+":"+header.Port)
 	if !header.HTTPS {
 		// Now that we have a stream, we send over the initial request via a data
 		// message.
@@ -1047,16 +1065,14 @@ func main() {
 		usage()
 	}
 	address := flag.Arg(3)
-	routerName := "Tor61Router-" + fmt.Sprintf("%04d", group) + "-" + fmt.Sprintf("%04d", instance)
+	routerName := "Tor61Router-" + fmt.Sprintf("%04d", group) +
+		"-" + fmt.Sprintf("%04d", instance)
 	routerNum := (group << 16) | (instance)
 	fmt.Printf("Router name: %s\n", routerName)
 	proxyPort = uint16(proxy)
 	routerID = uint32(routerNum)
 	fmt.Printf("Router ID: %d\n", routerID)
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
-	StartRouter(routerName, group, address)
+	startRouter(routerName, group, address)
 
 }
 
@@ -1065,7 +1081,7 @@ func usage() {
 	os.Exit(2)
 }
 
-//function to get the public ip address
+// Function to get the public ip address.
 func getOutboundIP() string {
 	conn, _ := net.Dial("udp", "8.8.8.8:80")
 	defer conn.Close()
