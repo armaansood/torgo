@@ -239,6 +239,9 @@ func (a *Agent) regServerListener(port int, ip string) {
 		IP:   net.ParseIP(ip),
 	}
 	conn, err := net.ListenUDP("udp", &addr)
+	fmt.Println(ip)
+	fmt.Println(port)
+	//	fmt.Println(
 	if err != nil {
 		log.Fatal(err)
 	}
