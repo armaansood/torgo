@@ -232,6 +232,7 @@ func (a *Agent) regServerListener(port int, ip string) {
 		Port: port,
 		IP:   net.ParseIP(ip),
 	}
+	fmt.Printf("Listening on %+v\n", addr)
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
 		log.Fatal(err)
