@@ -68,6 +68,7 @@ func (a *Agent) listenForReplies() {
 		data := make([]byte, 1024)
 		_, err := a.conn.Read(data)
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
 		_, _, err = getDataType(data)
@@ -85,6 +86,7 @@ func (a *Agent) sendMessage(message []byte, expectedReply uint8, messageType str
 	for i > 0 {
 		_, err := a.conn.Write(message)
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
 		select {
